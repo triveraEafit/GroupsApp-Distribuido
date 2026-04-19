@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+body { margin: 0; }
+
+/* Theme tokens via data-theme */
+:root {
+  --bg: 248 250 252;          /* slate-50 */
+  --bg2: 241 245 249;         /* slate-100 */
+  --panel: 255 255 255;       /* white */
+  --panel2: 255 255 255;
+  --border: 15 23 42 / 0.08;  /* slate-900 alpha */
+  --text: 15 23 42;           /* slate-900 */
+  --muted: 71 85 105;         /* slate-600 */
+  --primary: 37 99 235;       /* blue-600 */
+  --primary2: 79 70 229;      /* indigo-600 */
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  /* Pastel dark (no negro) */
+  --bg: 11 18 32;             /* deep blue-gray */
+  --bg2: 14 26 46;            /* slightly lighter */
+  --panel: 255 255 255 / 0.07;/* glass */
+  --panel2: 255 255 255 / 0.10;
+  --border: 255 255 255 / 0.10;
+  --text: 235 242 255;        /* soft white */
+  --muted: 180 194 214;       /* pastel gray */
+  --primary: 129 140 248;     /* indigo-300 pastel */
+  --primary2: 56 189 248;     /* sky-400 pastel */
+  color-scheme: dark;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+}
+
+/* Utility helpers */
+.theme-bg {
+  background: linear-gradient(
+    135deg,
+    rgb(var(--bg)) 0%,
+    rgb(var(--bg2)) 55%,
+    rgb(var(--bg)) 100%
+  );
+}
