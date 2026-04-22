@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-init
+spec:
+  template:
+    spec:
+      containers:
+      - name: db-init
+        image: postgres:16
+        env:
+        - name: PGPASSWORD
+          value: "password"
+        command:
+        - bash
+        - -c
+        - |
+          psql -h postgres -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='auth_db'" | grep -q 1 || psql -h postgres -U postgres -c "CREATE DATABASE auth_db;"
+          psql -h postgres -U postgres -tc "SELECT 1 FROM pg_database WHERE datname='messaging_db'" | grep -q 1 || psql -h postgres -U postgres -c "CREATE DATABASE messaging_db;"
+      restartPolicy: OnFailure

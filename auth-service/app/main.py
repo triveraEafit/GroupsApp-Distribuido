@@ -4,8 +4,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine
 from app.rest_router import router
 from app.grpc_server import serve
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="Auth Service")
+
+Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(
     CORSMiddleware,

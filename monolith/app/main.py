@@ -7,11 +7,13 @@ from app.routers import groups
 from app.schema_bootstrap import ensure_compat_schema
 from app.storage import storage_service
 from app.coordination import coordination_service
+from prometheus_fastapi_instrumentator import Instrumentator
 
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 app = FastAPI()
+Instrumentator().instrument(app).expose(app)
 app.include_router(groups.router)
 
 # Create tables when the app starts

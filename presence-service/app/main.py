@@ -4,8 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.rest_router import router, redis_client
 from app.config import KAFKA_BOOTSTRAP_SERVERS
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="Presence Service")
+
+Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(
     CORSMiddleware,

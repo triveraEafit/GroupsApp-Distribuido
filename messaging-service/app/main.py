@@ -4,8 +4,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.database import Base, engine
 from app.rest_router import router
 from app.kafka_consumer import start_consumer
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="Messaging Service")
+Instrumentator().instrument(app).expose(app)
 
 
 @app.on_event("startup")

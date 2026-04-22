@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+      - name: auth-service
+        image: groupsapp_d-auth-service:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://postgres:password@postgres:5432/auth_db"
+        - name: SECRET_KEY
+          value: "super-secret-key-change-in-production"
+        - name: ALGORITHM
+          value: "HS256"
+        - name: ACCESS_TOKEN_EXPIRE_MINUTES
+          value: "60"
+        - name: GRPC_PORT
+          value: "50051"
+        ports:
+        - containerPort: 8001
+        - containerPort: 50051
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+spec:
+  selector:
+    app: auth-service
+  ports:
+  - name: rest
+    port: 8001
+    targetPort: 8001
+  - name: grpc
+    port: 50051
+    targetPort: 50051
