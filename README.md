@@ -1,131 +1,140 @@
 # GroupsApp Distribuido
 
-Aplicacion de mensajeria instantanea con arquitectura distribuida para el proyecto academico de Topicos de Telematica.
+Aplicación de mensajería instantánea construida con arquitectura de microservicios, desplegada en Kubernetes.
 
-## Stack
+## Arquitectura
 
-- Frontend: React + Vite + Tailwind
-- Auth: FastAPI + JWT + gRPC
-- Messaging: FastAPI + Kafka
-- Presence: FastAPI + Redis + Kafka
-- Core groups/chat: Monolith service (FastAPI)
-- Gateway: Nginx
-- Data: PostgreSQL
-- Blob storage: MinIO (S3 compatible)
-- Coordinacion distribuida: etcd
+El sistema está compuesto por los siguientes servicios:
 
-## Levantar el proyecto en local
+- **Frontend** (React/Vite) en puerto 5173
+- **API Gateway** (nginx) en puerto 8090
+- **Monolith** en puerto 8000
+- **Auth Service** en puerto 8001 con gRPC en puerto 50051
+- **Messaging Service** en puerto 8002
+- **Presence Service** en puerto 8003
+- **PostgreSQL** con 3 bases de datos separadas
+- **Redis** para presencia y caché
+- **Kafka** para eventos asíncronos
+- **Prometheus** en puerto 9090 para métricas
+- **Grafana** en puerto 3000 para dashboards
 
-### 1) Clonar
+## Checklist de requerimientos
 
-```bash
-git clone https://github.com/triveraEafit/GroupsApp-Distribuido.git
-cd GroupsApp-Distribuido
-```
+### Funcionales
+- [x] Registro y autenticación de usuarios
+- [x] Creación y gestión de grupos
+- [x] Mensajería grupal en tiempo real (WebSocket)
+- [x] Mensajería directa 1-1
+- [x] Persistencia e historial de mensajes
+- [x] Estado de presencia online/offline (Redis)
+- [x] Envío y recepción de archivos en DMs
+- [ ] Roles de administrador en grupos
+- [ ] Subida de archivos en grupos
 
-### 2) Backend completo con Docker
+### No Funcionales
+- [x] Mínimo 3 microservicios (tenemos 4)
+- [x] API REST (todos los servicios)
+- [x] gRPC (Auth Service, puerto 50051)
+- [x] Kafka/MOM (Messaging + Presence Service)
+- [x] Bases de datos distribuidas (una por servicio)
+- [x] API Gateway con balanceador de carga (nginx)
+- [x] Kubernetes (Docker Desktop)
+- [x] Autoescalado HPA (messaging x5, presence x3)
+- [x] Alta disponibilidad
+- [x] Prometheus (métricas)
+- [x] Grafana (dashboards)
+- [ ] Despliegue en AWS EKS
+- [ ] Servicio de coordinación (etcd/Consul)
 
-```bash
-docker compose up -d --build
-```
+## Requisitos previos
 
-Si hay cambios grandes o inconsistencias de servicios:
+- Docker Desktop instalado, abierto y con Kubernetes habilitado
+- Node.js instalado
+- Git instalado
 
-```bash
-docker compose down
-docker compose up -d --build
-```
+## Cómo correr el proyecto
 
-### 3) Frontend (Vite)
+### 1. Clonar el repositorio
 
-```bash
-cd monolith/frontend
-npm install
-npm run dev -- --host 0.0.0.0 --port 5173 --force
-```
+    git clone https://github.com/triveraEafit/GroupsApp-Distribuido.git
+    cd GroupsApp-Distribuido
 
-## URLs principales
+### 2. Desplegar el backend en Kubernetes
 
-- Frontend: `http://localhost:5173`
-- Gateway: `http://localhost:8080`
-- Monolith docs: `http://localhost:8000/docs`
-- Auth docs: `http://localhost:8001/docs`
-- Messaging docs: `http://localhost:8002/docs`
-- Presence docs: `http://localhost:8003/docs`
-- MinIO API: `http://localhost:9000`
-- MinIO Console: `http://localhost:9001`
-- etcd: `http://localhost:2379`
+    .\deploy.ps1
 
-## Funcionalidad implementada
+Espera hasta que todos los pods estén en estado Running:
 
-### Backend distribuido
+    kubectl get pods
 
-- WebSocket grupal y DM funcionando por gateway (`/groups/ws/...` y `/groups/dm/ws/...`).
-- Recibos de DM en tiempo real (`delivered` y `read`) con persistencia.
-- Gobernanza de grupos:
-  - modos de suscripcion (`open`, `approval`, `invite_only`)
-  - roles (`admin`, `moderator`, `member`)
-  - estados de membresia (`pending`, `active`, `rejected`, `left`, `banned`)
-  - endpoints de aprobacion, promocion, democion, salida y remocion
-  - contactos por grupo (`GET/POST/DELETE /groups/{group_id}/contacts`)
-- Adjuntos distribuidos:
-  - metadata en DB + blob en MinIO
-  - descarga servida por backend (sin redireccion a hostname interno de Docker)
-- Coordinacion con etcd:
-  - health de etcd expuesto en `GET /health` del monolith
-  - lock best-effort para operaciones concurrentes de ingreso a grupos
-- Bootstrap de esquema para compatibilidad de DB existente.
+### 3. Abrir los puertos (4 terminales separadas)
 
-### Frontend UI/UX
+Terminal 1 — Gateway:
 
-- Vista de chat redisenada tipo app comercial:
-  - sidebar unificado (groups + direct)
-  - busqueda en tiempo real
-  - preview del ultimo mensaje + hora
-  - chips por fecha (`Hoy`, `Ayer`)
-  - avatares y badges de no leidos
-  - doble check visual para DM
-  - mejoras de scroll (abre al final de la conversacion)
-  - mejoras mobile (lista/chat por panel)
-- Navbar y layout principal refinados.
-- Auth (login/register) redisenado:
-  - tabs, labels flotantes, password visibility toggle
-  - feedback visual de validaciones
-  - indicador de fortaleza de password
-- Dashboard de grupos redisenado:
-  - cards de crear/unirse
-  - lista de grupos con acciones compactas y responsive
-  - empty states y busqueda mejorada
+    kubectl port-forward service/gateway 8090:8080 --address 0.0.0.0
 
-## Servicios en docker-compose
+Terminal 2 — Grafana:
 
-- `postgres`
-- `postgres-init`
-- `messaging-db-init`
-- `redis`
-- `minio`
-- `etcd`
-- `zookeeper`
-- `kafka`
-- `monolith`
-- `auth-service`
-- `messaging-service`
-- `presence-service`
-- `gateway`
+    kubectl port-forward service/grafana 3000:3000
 
-## Apagar entorno
+Terminal 3 — Prometheus:
 
-```bash
-docker compose down
-```
+    kubectl port-forward service/prometheus 9090:9090
 
-Para eliminar volumenes y datos:
+Terminal 4 — Frontend:
 
-```bash
-docker compose down -v
-```
+    cd monolith\frontend
+    npm install
+    npm run dev
 
-## Nota para el equipo
+### 4. Abrir en el navegador
 
-Si en frontend aparece una version vieja en browser, reiniciar Vite con `--force`.
-Si Kafka falla por estado previo en Zookeeper, recrear ambos contenedores (`zookeeper` y `kafka`) y volver a levantar dependencias.
+| Servicio | URL | Credenciales |
+|---|---|---|
+| App | http://localhost:5173 | - |
+| Grafana | http://localhost:3000 | admin / admin123 |
+| Prometheus | http://localhost:9090 | - |
+
+## URLs de los servicios
+
+| Servicio | URL |
+|---|---|
+| Monolito | http://localhost:8000/docs |
+| Auth Service | http://localhost:8001/docs |
+| Messaging Service | http://localhost:8002/docs |
+| Presence Service | http://localhost:8003/docs |
+
+## Comunicaciones entre servicios
+
+| Tipo | Usado en |
+|---|---|
+| REST | Todos los servicios (externo) |
+| gRPC | Auth Service puerto 50051 (interno) |
+| Kafka | Messaging a Presence (eventos async) |
+| WebSocket | Monolito a Frontend (chat tiempo real) |
+
+## Autoescalado
+
+El HPA (Horizontal Pod Autoscaler) está configurado:
+
+    kubectl get hpa
+
+| Servicio | Mínimo | Máximo | Trigger |
+|---|---|---|---|
+| Messaging Service | 1 pod | 5 pods | CPU mayor 50% |
+| Presence Service | 1 pod | 3 pods | CPU mayor 50% |
+
+## Cómo actualizar el repositorio
+
+    git add .
+    git commit -m "descripcion del cambio"
+    git push
+
+## Cómo obtener los últimos cambios
+
+    git pull
+    .\deploy.ps1
+
+## Detener el sistema
+
+    kubectl delete -f k8s/
