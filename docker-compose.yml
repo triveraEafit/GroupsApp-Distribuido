@@ -52,6 +52,30 @@ services:
       timeout: 3s
       retries: 5
 
+  minio:
+    image: minio/minio:latest
+    container_name: groupsapp-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    container_name: groupsapp-etcd
+    command: >
+      /usr/local/bin/etcd
+      --data-dir=/etcd-data
+      --advertise-client-urls=http://0.0.0.0:2379
+      --listen-client-urls=http://0.0.0.0:2379
+    ports:
+      - "2379:2379"
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: groupsapp-zookeeper
@@ -90,9 +114,20 @@ services:
       ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 60
       UPLOAD_DIR: uploads
+      STORAGE_PROVIDER: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio123
+      S3_BUCKET: groupsapp-files
+      S3_REGION: us-east-1
+      ETCD_ENDPOINT: http://etcd:2379
     depends_on:
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_started
+      etcd:
+        condition: service_started
     volumes:
       - ./monolith:/app
       - uploads_data:/app/uploads
@@ -164,3 +199,4 @@ services:
 volumes:
   postgres_data:
   uploads_data:
+  minio_data:

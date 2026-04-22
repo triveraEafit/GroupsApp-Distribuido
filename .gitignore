@@ -16,3 +16,4 @@ uploads/
 # IDE
 .idea/
 .vscode/
+.cursor/

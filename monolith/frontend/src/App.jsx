@@ -14,7 +14,7 @@ import { tokenStorage } from "@/shared/auth/tokenStorage";
 
 function HomeRedirect() {
   const token = tokenStorage.get();
-  return <Navigate to={token ? "/groups" : "/login"} replace />;
+  return <Navigate to={token ? "/chat" : "/login"} replace />;
 }
 
 export default function App() {

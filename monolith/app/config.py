@@ -20,3 +20,13 @@ SECRET_KEY = get_env("SECRET_KEY", required=True)
 ALGORITHM = get_env("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(get_env("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 UPLOAD_DIR = Path(get_env("UPLOAD_DIR", str(BASE_DIR / "uploads")))
+
+STORAGE_PROVIDER = get_env("STORAGE_PROVIDER", "local")
+S3_ENDPOINT_URL = get_env("S3_ENDPOINT_URL", "")
+S3_ACCESS_KEY = get_env("S3_ACCESS_KEY", "")
+S3_SECRET_KEY = get_env("S3_SECRET_KEY", "")
+S3_BUCKET = get_env("S3_BUCKET", "groupsapp-files")
+S3_REGION = get_env("S3_REGION", "us-east-1")
+S3_PRESIGN_EXPIRY_SECONDS = int(get_env("S3_PRESIGN_EXPIRY_SECONDS", "600"))
+
+ETCD_ENDPOINT = get_env("ETCD_ENDPOINT", "")

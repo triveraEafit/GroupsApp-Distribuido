@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap");
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -18,25 +19,39 @@ body { margin: 0; }
   --muted: 71 85 105;         /* slate-600 */
   --primary: 37 99 235;       /* blue-600 */
   --primary2: 79 70 229;      /* indigo-600 */
+  --chat-main: 248 249 255;
+  --chat-sidebar: 240 243 255;
+  --chat-panel: 255 255 255;
+  --chat-bubble-mine-from: 91 106 240;
+  --chat-bubble-mine-to: 124 58 237;
+  --chat-bubble-other: 232 236 253;
+  --chat-separator: 15 23 42 / 0.08;
   color-scheme: light;
 }
 
 [data-theme="dark"] {
   /* Pastel dark (no negro) */
-  --bg: 11 18 32;             /* deep blue-gray */
-  --bg2: 14 26 46;            /* slightly lighter */
+  --bg: 15 17 23;
+  --bg2: 19 21 30;
   --panel: 255 255 255 / 0.07;/* glass */
   --panel2: 255 255 255 / 0.10;
   --border: 255 255 255 / 0.10;
   --text: 235 242 255;        /* soft white */
   --muted: 180 194 214;       /* pastel gray */
-  --primary: 129 140 248;     /* indigo-300 pastel */
-  --primary2: 56 189 248;     /* sky-400 pastel */
+  --primary: 99 102 241;
+  --primary2: 124 58 237;
+  --chat-main: 19 21 28;
+  --chat-sidebar: 15 17 23;
+  --chat-panel: 26 29 46;
+  --chat-bubble-mine-from: 91 106 240;
+  --chat-bubble-mine-to: 124 58 237;
+  --chat-bubble-other: 30 33 48;
+  --chat-separator: 255 255 255 / 0.06;
   color-scheme: dark;
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+  font-family: "DM Sans", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
   background: rgb(var(--bg));
   color: rgb(var(--text));
 }
@@ -49,4 +64,80 @@ body {
     rgb(var(--bg2)) 55%,
     rgb(var(--bg)) 100%
   );
+}
+
+.chat-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 999px;
+}
+
+.online-pulse {
+  animation: onlinePulse 2s infinite;
+}
+
+.msg-enter {
+  animation: slideUp 0.15s ease-out;
+}
+
+@keyframes onlinePulse {
+  0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.5); }
+  70% { box-shadow: 0 0 0 8px rgba(74, 222, 128, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.auth-fade {
+  animation: authFade 0.2s ease-out;
+}
+
+@keyframes authFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.float-field {
+  position: relative;
+}
+
+.float-field input,
+.float-field textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0f1117;
+  color: #fff;
+  padding: 18px 16px 10px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.float-field input:focus,
+.float-field textarea:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.float-field label {
+  pointer-events: none;
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.45);
+  transition: all 0.15s ease;
+}
+
+.float-field.is-active label {
+  top: 7px;
+  font-size: 11px;
+  color: #a5b4fc;
 }

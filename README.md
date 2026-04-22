@@ -1,79 +1,131 @@
 # GroupsApp Distribuido
 
-Aplicación de mensajería instantánea construida con arquitectura de microservicios.
+Aplicacion de mensajeria instantanea con arquitectura distribuida para el proyecto academico de Topicos de Telematica.
 
-## Requisitos previos
+## Stack
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) instalado y corriendo
-- [Node.js](https://nodejs.org/) instalado
-- Git instalado
+- Frontend: React + Vite + Tailwind
+- Auth: FastAPI + JWT + gRPC
+- Messaging: FastAPI + Kafka
+- Presence: FastAPI + Redis + Kafka
+- Core groups/chat: Monolith service (FastAPI)
+- Gateway: Nginx
+- Data: PostgreSQL
+- Blob storage: MinIO (S3 compatible)
+- Coordinacion distribuida: etcd
 
-## Cómo correr el proyecto
+## Levantar el proyecto en local
 
-### 1. Clonar el repositorio
+### 1) Clonar
 
+```bash
 git clone https://github.com/triveraEafit/GroupsApp-Distribuido.git
 cd GroupsApp-Distribuido
+```
 
-### 2. Levantar el backend completo
+### 2) Backend completo con Docker
 
-Desde la carpeta raíz del proyecto:
+```bash
+docker compose up -d --build
+```
 
-docker compose up --build
+Si hay cambios grandes o inconsistencias de servicios:
 
-La primera vez tarda varios minutos porque descarga las imágenes de Docker.
-Cuando veas "Application startup complete" en los logs, todo está listo.
+```bash
+docker compose down
+docker compose up -d --build
+```
 
-### 3. Levantar el frontend
+### 3) Frontend (Vite)
 
-Abre una terminal nueva y ejecuta:
-
+```bash
 cd monolith/frontend
 npm install
-npm run dev
+npm run dev -- --host 0.0.0.0 --port 5173 --force
+```
 
-## URLs del sistema
+## URLs principales
 
-| Servicio | URL | Descripción |
-|---|---|---|
-| Frontend | http://localhost:5173 | Interfaz de usuario |
-| API Gateway | http://localhost:8080 | Punto de entrada único |
-| Monolito | http://localhost:8000/docs | API principal |
-| Auth Service | http://localhost:8001/docs | Registro y login |
-| Messaging Service | http://localhost:8002/docs | Mensajería con Kafka |
-| Presence Service | http://localhost:8003/docs | Estado online/offline |
+- Frontend: `http://localhost:5173`
+- Gateway: `http://localhost:8080`
+- Monolith docs: `http://localhost:8000/docs`
+- Auth docs: `http://localhost:8001/docs`
+- Messaging docs: `http://localhost:8002/docs`
+- Presence docs: `http://localhost:8003/docs`
+- MinIO API: `http://localhost:9000`
+- MinIO Console: `http://localhost:9001`
+- etcd: `http://localhost:2379`
 
-## Arquitectura
+## Funcionalidad implementada
 
-El sistema está compuesto por los siguientes servicios:
+### Backend distribuido
 
-- **Monolito**: contiene la lógica principal de grupos, chat y archivos
-- **Auth Service**: maneja registro, login y validación de tokens JWT. Se comunica internamente via gRPC en el puerto 50051
-- **Messaging Service**: recibe y persiste mensajes, publica eventos a Kafka
-- **Presence Service**: rastrea usuarios online/offline usando Redis, consume eventos de Kafka
-- **API Gateway**: nginx que enruta el tráfico al servicio correcto según la URL
-- **Kafka**: broker de mensajes para comunicación asíncrona entre servicios
-- **Redis**: almacenamiento en memoria para estado de presencia
-- **PostgreSQL**: base de datos relacional, una por cada servicio
+- WebSocket grupal y DM funcionando por gateway (`/groups/ws/...` y `/groups/dm/ws/...`).
+- Recibos de DM en tiempo real (`delivered` y `read`) con persistencia.
+- Gobernanza de grupos:
+  - modos de suscripcion (`open`, `approval`, `invite_only`)
+  - roles (`admin`, `moderator`, `member`)
+  - estados de membresia (`pending`, `active`, `rejected`, `left`, `banned`)
+  - endpoints de aprobacion, promocion, democion, salida y remocion
+  - contactos por grupo (`GET/POST/DELETE /groups/{group_id}/contacts`)
+- Adjuntos distribuidos:
+  - metadata en DB + blob en MinIO
+  - descarga servida por backend (sin redireccion a hostname interno de Docker)
+- Coordinacion con etcd:
+  - health de etcd expuesto en `GET /health` del monolith
+  - lock best-effort para operaciones concurrentes de ingreso a grupos
+- Bootstrap de esquema para compatibilidad de DB existente.
 
-## Cómo agregar un nuevo microservicio
+### Frontend UI/UX
 
-1. Crea una carpeta nueva en la raíz, por ejemplo `mi-servicio/`
-2. Agrega `Dockerfile`, `requirements.txt` y la carpeta `app/` con el código
-3. Agrega el servicio al `docker-compose.yml`
-4. Si necesita base de datos propia, agrega un bloque `*-db-init` en el compose
-5. Agrega la ruta correspondiente en `gateway/nginx.conf`
-6. Ejecuta `docker compose up --build`
+- Vista de chat redisenada tipo app comercial:
+  - sidebar unificado (groups + direct)
+  - busqueda en tiempo real
+  - preview del ultimo mensaje + hora
+  - chips por fecha (`Hoy`, `Ayer`)
+  - avatares y badges de no leidos
+  - doble check visual para DM
+  - mejoras de scroll (abre al final de la conversacion)
+  - mejoras mobile (lista/chat por panel)
+- Navbar y layout principal refinados.
+- Auth (login/register) redisenado:
+  - tabs, labels flotantes, password visibility toggle
+  - feedback visual de validaciones
+  - indicador de fortaleza de password
+- Dashboard de grupos redisenado:
+  - cards de crear/unirse
+  - lista de grupos con acciones compactas y responsive
+  - empty states y busqueda mejorada
 
-## Cómo detener el sistema
+## Servicios en docker-compose
 
+- `postgres`
+- `postgres-init`
+- `messaging-db-init`
+- `redis`
+- `minio`
+- `etcd`
+- `zookeeper`
+- `kafka`
+- `monolith`
+- `auth-service`
+- `messaging-service`
+- `presence-service`
+- `gateway`
+
+## Apagar entorno
+
+```bash
 docker compose down
+```
 
-Para detener y eliminar todos los datos (bases de datos, volúmenes):
+Para eliminar volumenes y datos:
 
+```bash
 docker compose down -v
+```
 
-## Variables de entorno
+## Nota para el equipo
 
-Cada servicio lee sus variables del `docker-compose.yml`. Para producción
-se recomienda usar un archivo `.env` separado y no hardcodear contraseñas.# GroupsApp-Distribuido
+Si en frontend aparece una version vieja en browser, reiniciar Vite con `--force`.
+Si Kafka falla por estado previo en Zookeeper, recrear ambos contenedores (`zookeeper` y `kafka`) y volver a levantar dependencias.

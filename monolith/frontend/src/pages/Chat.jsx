@@ -1,60 +1,67 @@
-import React, { useEffect, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { Button } from "@/shared/ui/Button";
 import { Card } from "@/shared/ui/Card";
 import { Input } from "@/shared/ui/Input";
-import { Button } from "@/shared/ui/Button";
 import {
+  createGroup,
   getCurrentUsername,
   getDirectHistory,
+  getFileDownloadUrl,
   getGroupMessages,
   getMyGroups,
   getUnreadDirectMessages,
   getUserIdFromToken,
+  joinGroup,
   markDirectMessagesAsRead,
   uploadFileToUser,
-  getFileDownloadUrl,
 } from "@/shared/api/client";
 import { tokenStorage } from "@/shared/auth/tokenStorage";
 import { TextWebSocketClient } from "@/shared/wsClient";
 
 const RECENT_DM_KEY = "groupsapp_recent_dm_usernames";
 
-function migrateRecentDms() {
-  const current = sessionStorage.getItem(RECENT_DM_KEY);
-  if (current) return current;
-
-  const legacy = localStorage.getItem(RECENT_DM_KEY);
-  if (!legacy) return "[]";
-
-  sessionStorage.setItem(RECENT_DM_KEY, legacy);
-  localStorage.removeItem(RECENT_DM_KEY);
-  return legacy;
-}
-
 function loadRecentDmUsernames() {
   try {
-    const saved = JSON.parse(migrateRecentDms());
-    return Array.isArray(saved) ? saved : [];
+    const raw = sessionStorage.getItem(RECENT_DM_KEY) || localStorage.getItem(RECENT_DM_KEY) || "[]";
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
 }
 
-function saveRecentDmUsernames(usernames) {
-  sessionStorage.setItem(RECENT_DM_KEY, JSON.stringify(usernames.slice(0, 8)));
+function saveRecentDmUsernames(items) {
+  sessionStorage.setItem(RECENT_DM_KEY, JSON.stringify(items.slice(0, 16)));
   localStorage.removeItem(RECENT_DM_KEY);
 }
 
-function formatTimestamp(value) {
+function toTimestamp(value) {
+  const ms = new Date(value || "").getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function formatTime(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString();
+  const diffMs = Date.now() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin >= 0 && diffMin < 1) return "ahora";
+  if (diffMin < 60) return `hace ${diffMin} min`;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function parseMessageDate(value) {
-  const timestamp = new Date(value || "").getTime();
-  return Number.isNaN(timestamp) ? 0 : timestamp;
+function formatDateDivider(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diff = Math.round((startOfToday - startOfDate) / (24 * 60 * 60 * 1000));
+  if (diff === 0) return "Hoy";
+  if (diff === 1) return "Ayer";
+  return date.toLocaleDateString();
 }
 
 function humanFileSize(size) {
@@ -64,118 +71,226 @@ function humanFileSize(size) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function makeQueueId() {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+function avatarInitials(label) {
+  const clean = String(label || "?").replace(/^@|^#/, "").trim();
+  if (!clean) return "?";
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return clean.slice(0, 2).toUpperCase();
+}
+
+function avatarGradient(seed) {
+  const clean = String(seed || "x");
+  const total = clean.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const from = 200 + (total % 120);
+  const to = 250 + (total % 80);
+  return `linear-gradient(135deg, hsl(${from}, 78%, 58%), hsl(${to}, 72%, 54%))`;
 }
 
 export default function Chat() {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialGroup = Number(searchParams.get("group") || "");
+  const initialGroupId = Number(searchParams.get("group") || "");
   const initialDm = searchParams.get("dm") || "";
 
   const currentUserId = getUserIdFromToken();
-  const currentUsername =
-    getCurrentUsername() || (currentUserId ? `User #${currentUserId}` : "Session");
+  const currentUsername = getCurrentUsername() || (currentUserId ? `User #${currentUserId}` : "Session");
 
-  const [mode, setMode] = useState(initialDm ? "dm" : "group");
   const [groups, setGroups] = useState([]);
-  const [activeGroupId, setActiveGroupId] = useState(
-    Number.isFinite(initialGroup) ? initialGroup : 0
-  );
-  const [groupMessages, setGroupMessages] = useState([]);
-
   const [recentDmUsernames, setRecentDmUsernames] = useState(loadRecentDmUsernames);
-  const [dmInput, setDmInput] = useState(initialDm);
-  const [activeDmUsername, setActiveDmUsername] = useState(initialDm);
+  const [groupMessages, setGroupMessages] = useState([]);
   const [dmMessages, setDmMessages] = useState([]);
-  const [unreadDmCount, setUnreadDmCount] = useState(0);
+  const [unreadByDm, setUnreadByDm] = useState({});
+  const [receiptsByMessageId, setReceiptsByMessageId] = useState({});
+  const [groupMetaById, setGroupMetaById] = useState({});
+  const [dmMetaByUsername, setDmMetaByUsername] = useState({});
 
+  const [activeChat, setActiveChat] = useState(
+    initialDm ? { type: "dm", id: initialDm } : { type: "group", id: Number.isFinite(initialGroupId) ? initialGroupId : 0 }
+  );
   const [composer, setComposer] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [newDmInput, setNewDmInput] = useState(initialDm);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupDescription, setNewGroupDescription] = useState("");
+  const [joinGroupId, setJoinGroupId] = useState("");
+  const [sidebarSearch, setSidebarSearch] = useState("");
+  const [mobilePane, setMobilePane] = useState(initialDm || initialGroupId ? "chat" : "list");
+  const [showGroupPanel, setShowGroupPanel] = useState(false);
+  const [showJoinPanel, setShowJoinPanel] = useState(false);
   const [socketStatus, setSocketStatus] = useState("offline");
   const [socketNote, setSocketNote] = useState("");
-  const [error, setError] = useState("");
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [typingPreview, setTypingPreview] = useState(false);
+  const [bubbleActionId, setBubbleActionId] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [showInfoModal, setShowInfoModal] = useState(false);
-  const [queuedByThread, setQueuedByThread] = useState({});
-  const [localFilesByThread, setLocalFilesByThread] = useState({});
+  const [error, setError] = useState("");
 
   const wsRef = useRef(null);
-  const messagesEndRef = useRef(null);
-  const queuedByThreadRef = useRef({});
+  const bottomRef = useRef(null);
+  const timelineRef = useRef(null);
   const fileInputRef = useRef(null);
+  const lastChatKeyRef = useRef("");
 
-  const activeGroup = groups.find((group) => Number(group.id) === Number(activeGroupId));
-  const activeMessages = mode === "group" ? groupMessages : dmMessages;
-  const activeThreadKey =
-    mode === "group" ? `group:${activeGroupId || "none"}` : `dm:${activeDmUsername || "none"}`;
-  const queuedMessages = queuedByThread[activeThreadKey] || [];
-  const localFiles = localFilesByThread[activeThreadKey] || [];
-  const canTargetConversation =
-    mode === "group" ? Boolean(activeGroupId) : Boolean(activeDmUsername);
+  const activeGroup = groups.find((group) => Number(group.id) === Number(activeChat.id));
+  const activeMessages = activeChat.type === "group" ? groupMessages : dmMessages;
+  const canSend = activeChat.type === "group" ? Boolean(activeChat.id) : Boolean(activeChat.id?.trim());
 
-  useEffect(() => {
-    queuedByThreadRef.current = queuedByThread;
-  }, [queuedByThread]);
+  const filteredGroups = useMemo(() => {
+    const q = sidebarSearch.trim().toLowerCase();
+    return groups.filter((group) => {
+      if (!q) return true;
+      return (
+        String(group.id).includes(q) ||
+        String(group.name || "").toLowerCase().includes(q) ||
+        String(group.description || "").toLowerCase().includes(q)
+      );
+    });
+  }, [groups, sidebarSearch]);
 
-  function rememberKnownUser(userId, username) {
-    tokenStorage.rememberKnownUser(userId, username);
+  const filteredDms = useMemo(() => {
+    const q = sidebarSearch.trim().toLowerCase();
+    return recentDmUsernames.filter((username) => !q || username.toLowerCase().includes(q));
+  }, [recentDmUsernames, sidebarSearch]);
+
+  const timelineItems = useMemo(() => {
+    const sorted = [...activeMessages].sort((a, b) => {
+      const ta = toTimestamp(a.created_at) || Number(a.id) || 0;
+      const tb = toTimestamp(b.created_at) || Number(b.id) || 0;
+      return ta - tb;
+    });
+    const result = [];
+    let lastDivider = "";
+    for (const item of sorted) {
+      const divider = formatDateDivider(item.created_at);
+      if (divider && divider !== lastDivider) {
+        result.push({ kind: "divider", id: `divider-${divider}-${item.id}`, label: divider });
+        lastDivider = divider;
+      }
+      result.push({ kind: "message", id: `message-${item.id}`, payload: item });
+    }
+    return result;
+  }, [activeMessages]);
+
+  const orderedMessages = useMemo(
+    () => timelineItems.filter((item) => item.kind === "message").map((item) => item.payload),
+    [timelineItems]
+  );
+
+  function rememberDm(username) {
+    const clean = username.trim();
+    if (!clean) return;
+    const next = [clean, ...recentDmUsernames.filter((item) => item !== clean)];
+    setRecentDmUsernames(next);
+    saveRecentDmUsernames(next);
   }
 
-  function resolveKnownUsername(userId) {
+  function resolveUsername(userId) {
     if (Number(userId) === Number(currentUserId)) return currentUsername;
-    return tokenStorage.getKnownUsername(Number(userId));
+    return tokenStorage.getKnownUsername(Number(userId)) || `User #${userId}`;
   }
 
-  function getStatusMeta() {
-    if (socketStatus === "online") {
-      return {
-        label: queuedMessages.length > 0 ? `Online · ${queuedMessages.length} queued` : "Online",
-        helper: "Ready to send now",
-        chipClass: "bg-emerald-500/15 text-emerald-200 border-emerald-400/20",
-      };
-    }
+  async function computeGroupMeta(list) {
+    const entries = await Promise.all(
+      list.map(async (group) => {
+        try {
+          const messages = await getGroupMessages(group.id);
+          const arr = Array.isArray(messages) ? messages : [];
+          const last = arr[arr.length - 1];
+          return [
+            group.id,
+            {
+              preview: last?.content || "Sin mensajes",
+              time: last?.created_at || null,
+            },
+          ];
+        } catch {
+          return [group.id, { preview: "Sin mensajes", time: null }];
+        }
+      })
+    );
+    setGroupMetaById(Object.fromEntries(entries));
+  }
 
-    if (socketStatus === "connecting") {
-      return {
-        label: queuedMessages.length > 0 ? `Reconnecting · ${queuedMessages.length} on hold` : "Reconnecting",
-        helper: "Trying to restore the chat connection",
-        chipClass: "bg-amber-500/15 text-amber-200 border-amber-400/20",
-      };
-    }
-
-    if (socketStatus === "blocked") {
-      return {
-        label: "Unavailable",
-        helper: "Backend rejected this chat session",
-        chipClass: "bg-red-500/15 text-red-200 border-red-400/20",
-      };
-    }
-
-    return {
-      label: queuedMessages.length > 0 ? `Offline · ${queuedMessages.length} on hold` : "Offline",
-      helper: "New text messages stay queued locally",
-      chipClass: "bg-slate-500/15 text-slate-200 border-white/10",
-    };
+  async function computeDmMeta(usernames) {
+    const entries = await Promise.all(
+      usernames.map(async (username) => {
+        try {
+          const messages = await getDirectHistory(username);
+          const arr = Array.isArray(messages) ? messages : [];
+          const last = arr[arr.length - 1];
+          return [
+            username,
+            {
+              preview: last?.content || (last?.file_name ? `📎 ${last.file_name}` : "Sin mensajes"),
+              time: last?.created_at || null,
+            },
+          ];
+        } catch {
+          return [username, { preview: "Sin mensajes", time: null }];
+        }
+      })
+    );
+    setDmMetaByUsername((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
   }
 
   async function loadGroups() {
     const data = await getMyGroups();
-    const nextGroups = Array.isArray(data) ? data : [];
-    setGroups(nextGroups);
-
-    if (!activeGroupId && nextGroups[0]) {
-      setActiveGroupId(nextGroups[0].id);
+    const list = Array.isArray(data) ? data : [];
+    setGroups(list);
+    computeGroupMeta(list);
+    if (activeChat.type === "group" && !activeChat.id && list[0]) {
+      setActiveChat({ type: "group", id: list[0].id });
     }
   }
 
-  async function loadUnreadCount() {
+  async function onCreateGroup(event) {
+    event.preventDefault();
+    const name = newGroupName.trim();
+    if (!name) return;
+    try {
+      const created = await createGroup({
+        name,
+        description: newGroupDescription.trim(),
+      });
+      await loadGroups();
+      setActiveChat({ type: "group", id: created.id });
+      setMobilePane("chat");
+      setNewGroupName("");
+      setNewGroupDescription("");
+      setSocketNote(`Grupo #${created.id} creado`);
+    } catch (e) {
+      setError(e.message || "No se pudo crear el grupo");
+    }
+  }
+
+  async function onJoinGroup(event) {
+    event.preventDefault();
+    const id = Number(joinGroupId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    try {
+      await joinGroup(id);
+      await loadGroups();
+      setActiveChat({ type: "group", id });
+      setMobilePane("chat");
+      setJoinGroupId("");
+      setSocketNote(`Te uniste al grupo #${id}`);
+    } catch (e) {
+      setError(e.message || "No se pudo unir al grupo");
+    }
+  }
+
+  async function loadUnreadDms() {
     try {
       const unread = await getUnreadDirectMessages();
-      setUnreadDmCount(Array.isArray(unread) ? unread.length : 0);
+      const map = {};
+      for (const item of Array.isArray(unread) ? unread : []) {
+        const username = resolveUsername(item.sender_id);
+        map[username] = (map[username] || 0) + 1;
+        rememberDm(username);
+      }
+      setUnreadByDm(map);
     } catch {
-      setUnreadDmCount(0);
+      setUnreadByDm({});
     }
   }
 
@@ -184,15 +299,12 @@ export default function Chat() {
       setGroupMessages([]);
       return;
     }
-
     setLoading(true);
     try {
       const data = await getGroupMessages(groupId);
-      const items = Array.isArray(data) ? data : [];
-      rememberKnownUser(currentUserId, currentUsername);
-      setGroupMessages(items);
+      setGroupMessages(Array.isArray(data) ? data : []);
     } catch (e) {
-      setError(e.message || "Could not load group history.");
+      setError(e.message || "No se pudo cargar el grupo");
       setGroupMessages([]);
     } finally {
       setLoading(false);
@@ -204,152 +316,58 @@ export default function Chat() {
       setDmMessages([]);
       return;
     }
-
     setLoading(true);
     try {
       const data = await getDirectHistory(username);
       const items = Array.isArray(data) ? data : [];
-      rememberKnownUser(currentUserId, currentUsername);
-
-      const otherUserId = items.reduce((foundId, message) => {
-        if (foundId) return foundId;
-        if (Number(message.sender_id) !== Number(currentUserId)) return Number(message.sender_id);
-        if (Number(message.receiver_id) !== Number(currentUserId)) return Number(message.receiver_id);
-        return foundId;
-      }, null);
-
-      if (otherUserId) {
-        rememberKnownUser(otherUserId, username);
+      for (const item of items) {
+        if (Number(item.sender_id) !== Number(currentUserId)) {
+          tokenStorage.rememberKnownUser(item.sender_id, username);
+        }
+        if (item.is_read) {
+          setReceiptsByMessageId((prev) => ({
+            ...prev,
+            [item.id]: { ...(prev[item.id] || {}), read_at: item.created_at || new Date().toISOString() },
+          }));
+        }
       }
-
       setDmMessages(items);
       await markDirectMessagesAsRead(username).catch(() => null);
-      await loadUnreadCount();
+      await loadUnreadDms();
+      await computeDmMeta([username]);
     } catch (e) {
-      setError(e.message || "Could not load direct messages.");
+      setError(e.message || "No se pudo cargar el chat directo");
       setDmMessages([]);
     } finally {
       setLoading(false);
     }
   }
 
-  function rememberDm(username) {
-    const cleaned = username.trim();
-    if (!cleaned) return;
-
-    const next = [cleaned, ...recentDmUsernames.filter((item) => item !== cleaned)];
-    setRecentDmUsernames(next);
-    saveRecentDmUsernames(next);
-  }
-
-  function forgetDm(username) {
-    const next = recentDmUsernames.filter((item) => item !== username);
-    setRecentDmUsernames(next);
-    saveRecentDmUsernames(next);
-
-    if (activeDmUsername === username) {
-      setActiveDmUsername("");
-      setDmInput("");
-      setDmMessages([]);
-    }
-  }
-
-  function openDm(username) {
-    const cleaned = username.trim();
-    if (!cleaned) return;
-
-    rememberDm(cleaned);
-    setMode("dm");
-    setActiveDmUsername(cleaned);
-    setDmInput(cleaned);
-    setError("");
-    setSocketNote("");
-  }
-
-  function queueMessage(text) {
-    const item = {
-      id: makeQueueId(),
-      text,
-      createdAt: new Date().toISOString(),
-    };
-
-    setQueuedByThread((prev) => ({
-      ...prev,
-      [activeThreadKey]: [...(prev[activeThreadKey] || []), item],
-    }));
-  }
-
-  function clearQueuedMessages(threadKey) {
-    setQueuedByThread((prev) => {
-      const next = { ...prev };
-      delete next[threadKey];
-      return next;
-    });
-  }
-
-  function addLocalFileMessage(file, note, status) {
-    const item = {
-      id: makeQueueId(),
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type || "application/octet-stream",
-      note: note.trim(),
-      createdAt: new Date().toISOString(),
-      status,
-    };
-
-    setLocalFilesByThread((prev) => ({
-      ...prev,
-      [activeThreadKey]: [...(prev[activeThreadKey] || []), item],
-    }));
-  }
-
-  function updateLocalFileStatus(threadKey, fromStatus, toStatus) {
-    setLocalFilesByThread((prev) => ({
-      ...prev,
-      [threadKey]: (prev[threadKey] || []).map((item) =>
-        item.status === fromStatus ? { ...item, status: toStatus } : item
-      ),
-    }));
-  }
-
-  function clearLocalFiles(threadKey) {
-    setLocalFilesByThread((prev) => {
-      const next = { ...prev };
-      delete next[threadKey];
-      return next;
-    });
-  }
-
-  function flushQueuedMessages(client, threadKey) {
-    const queued = queuedByThreadRef.current[threadKey] || [];
-    if (!queued.length) return;
-
-    for (const item of queued) {
-      client.send(item.text);
-    }
-
-    clearQueuedMessages(threadKey);
-    setSocketNote(`Delivered ${queued.length} queued message${queued.length === 1 ? "" : "s"}.`);
-  }
-
   useEffect(() => {
-    loadGroups().catch((e) => setError(e.message || "Could not load groups."));
-    loadUnreadCount();
-    rememberKnownUser(currentUserId, currentUsername);
+    loadGroups().catch((e) => setError(e.message || "No se pudieron cargar grupos"));
+    loadUnreadDms();
   }, []);
 
   useEffect(() => {
-    if (mode === "group") {
-      loadGroupHistory(activeGroupId);
-      return;
-    }
-
-    loadDmHistory(activeDmUsername);
-  }, [mode, activeGroupId, activeDmUsername]);
+    computeDmMeta(recentDmUsernames);
+  }, [recentDmUsernames.join("|")]);
 
   useEffect(() => {
-    if (!canTargetConversation) {
+    const onToggleSidebar = () => setMobilePane((prev) => (prev === "list" ? "chat" : "list"));
+    window.addEventListener("groupsapp:toggle-sidebar", onToggleSidebar);
+    return () => window.removeEventListener("groupsapp:toggle-sidebar", onToggleSidebar);
+  }, []);
+
+  useEffect(() => {
+    if (activeChat.type === "group") {
+      loadGroupHistory(activeChat.id);
+    } else {
+      loadDmHistory(activeChat.id);
+    }
+  }, [activeChat.type, activeChat.id]);
+
+  useEffect(() => {
+    if (!canSend) {
       setSocketStatus("offline");
       return;
     }
@@ -357,46 +375,58 @@ export default function Chat() {
     wsRef.current?.close();
     setSocketStatus("connecting");
 
-    const threadKey =
-      mode === "group" ? `group:${activeGroupId}` : `dm:${activeDmUsername}`;
     const path =
-      mode === "group"
-        ? `/groups/ws/${activeGroupId}`
-        : `/groups/dm/ws/${encodeURIComponent(activeDmUsername)}`;
+      activeChat.type === "group"
+        ? `/groups/ws/${activeChat.id}`
+        : `/groups/dm/ws/${encodeURIComponent(activeChat.id)}`;
 
     const client = new TextWebSocketClient(path, {
       onOpen: () => {
         setSocketStatus("online");
         setError("");
-        flushQueuedMessages(client, threadKey);
-        updateLocalFileStatus(threadKey, "on_hold", "pending_backend");
       },
       onClose: (event) => {
         if (event?.code === 1008) {
           setSocketStatus("blocked");
           return;
         }
-
         setSocketStatus("offline");
       },
       onError: (socketError) => {
         const message = socketError.message || "WebSocket connection failed";
-        setSocketStatus(
-          message.includes("rejected by backend") ? "blocked" : "offline"
-        );
+        setSocketStatus(message.includes("rejected by backend") ? "blocked" : "offline");
         setError(message);
       },
       onMessage: (text) => {
-        if (mode === "dm" && text.startsWith("[Sistema]")) {
-          setSocketNote(text);
-        } else if (socketNote) {
-          setSocketNote("");
+        let payload = null;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          payload = null;
         }
-
-        if (mode === "group") {
-          loadGroupHistory(activeGroupId);
+        if (payload?.type === "dm_receipt" && payload?.message_id) {
+          setReceiptsByMessageId((prev) => ({
+            ...prev,
+            [payload.message_id]: {
+              ...(prev[payload.message_id] || {}),
+              delivered_at: payload.delivered_at || prev[payload.message_id]?.delivered_at || null,
+              read_at: payload.read_at || prev[payload.message_id]?.read_at || null,
+            },
+          }));
+          setDmMessages((prev) =>
+            prev.map((message) =>
+              message.id === payload.message_id && payload.read_at
+                ? { ...message, is_read: true }
+                : message
+            )
+          );
+          return;
+        }
+        if (activeChat.type === "group") {
+          loadGroupHistory(activeChat.id);
         } else {
-          loadDmHistory(activeDmUsername);
+          if (text.startsWith("[Sistema]")) setSocketNote(text);
+          loadDmHistory(activeChat.id);
         }
       },
     });
@@ -404,338 +434,365 @@ export default function Chat() {
     client.connect();
     wsRef.current = client;
 
-    return () => {
-      client.close();
-    };
-  }, [mode, activeGroupId, activeDmUsername, canTargetConversation]);
+    return () => client.close();
+  }, [activeChat.type, activeChat.id, canSend]);
 
   useEffect(() => {
-    const nextParams = new URLSearchParams();
-    if (mode === "group" && activeGroupId) {
-      nextParams.set("group", String(activeGroupId));
-    }
-    if (mode === "dm" && activeDmUsername) {
-      nextParams.set("dm", activeDmUsername);
-    }
-    setSearchParams(nextParams, { replace: true });
-  }, [mode, activeGroupId, activeDmUsername, setSearchParams]);
+    const params = new URLSearchParams();
+    if (activeChat.type === "group" && activeChat.id) params.set("group", String(activeChat.id));
+    if (activeChat.type === "dm" && activeChat.id) params.set("dm", activeChat.id);
+    setSearchParams(params, { replace: true });
+  }, [activeChat, setSearchParams]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [groupMessages, dmMessages, queuedMessages, localFiles, mode]);
+    const currentChatKey = `${activeChat.type}:${activeChat.id || ""}`;
+    const chatChanged = lastChatKeyRef.current !== currentChatKey;
+    lastChatKeyRef.current = currentChatKey;
+
+    const scrollBehavior = chatChanged ? "auto" : "smooth";
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: scrollBehavior, block: "end" });
+    });
+  }, [timelineItems, socketNote, activeChat.type, activeChat.id]);
 
   useEffect(() => {
-    const conversationLabel =
-      mode === "group"
-        ? activeGroup?.name || "Group chat"
-        : activeDmUsername
-          ? `@${activeDmUsername}`
-          : "Direct chat";
+    setTypingPreview(Boolean(composer.trim()));
+  }, [composer]);
 
-    const statusText = socketStatus === "online" ? "online" : "offline";
-    document.title = `${currentUsername} · ${conversationLabel} · ${statusText}`;
-  }, [currentUsername, mode, activeGroup?.name, activeDmUsername, socketStatus]);
+  function onTimelineScroll(event) {
+    const el = event.currentTarget;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollButton(distance > 120);
+  }
 
-  async function onSend(e) {
-    e.preventDefault();
+  function scrollToBottom(smooth = true) {
+    bottomRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+  }
+
+  async function onSend(event) {
+    event.preventDefault();
     const text = composer.trim();
-    const file = selectedFile;
-
-    if (!text && !file) return;
-    if (!canTargetConversation) return;
+    if (!text && !selectedFile) return;
+    if (!canSend) return;
 
     setError("");
-
-    // Manejar archivo en DM
-    if (file && mode === "dm" && activeDmUsername) {
+    if (selectedFile && activeChat.type === "dm") {
       try {
-        const result = await uploadFileToUser(activeDmUsername, file);
-        setSocketNote(`File "${file.name}" uploaded successfully!`);
-        
-        // Recargar mensajes para mostrar el archivo
-        await loadDmHistory(activeDmUsername);
-        
+        await uploadFileToUser(activeChat.id, selectedFile);
         setSelectedFile(null);
-        if (fileInputRef.current) {
-          fileInputRef.current.value = "";
-        }
-      } catch (uploadError) {
-        setError(`Failed to upload file: ${uploadError.message}`);
-        // Si falla, guardarlo localmente como fallback
-        addLocalFileMessage(
-          file,
-          text,
-          "upload_failed"
-        );
-      }
-    } else if (file && mode === "group") {
-      // Los grupos aún no soportan archivos
-      setSocketNote("File uploads are only available in direct messages for now.");
-      setSelectedFile(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        await loadDmHistory(activeChat.id);
+      } catch (e) {
+        setError(e.message || "Error subiendo archivo");
       }
     }
 
-    // Manejar texto
     if (text) {
-      if (socketStatus === "online") {
-        try {
-          wsRef.current?.send(text);
-        } catch (sendError) {
-          queueMessage(text);
-          setError(sendError.message || "Message could not be sent right now.");
-        }
-      } else {
-        queueMessage(text);
+      try {
+        wsRef.current?.send(text);
+      } catch (e) {
+        setError(e.message || "No se pudo enviar el mensaje");
       }
     }
-
     setComposer("");
   }
 
-  function renderServerMessage(message) {
+  function startDirectChat() {
+    const username = newDmInput.trim();
+    if (!username) return;
+    rememberDm(username);
+    setActiveChat({ type: "dm", id: username });
+    setMobilePane("chat");
+    setNewDmInput("");
+  }
+
+  function openGroup(groupId) {
+    setActiveChat({ type: "group", id: groupId });
+    setMobilePane("chat");
+  }
+
+  function openDm(username) {
+    setActiveChat({ type: "dm", id: username });
+    setMobilePane("chat");
+  }
+
+  function renderMessageBubble(message, index) {
     const isMine =
-      mode === "group"
+      activeChat.type === "group"
         ? Number(message.user_id) === Number(currentUserId)
         : Number(message.sender_id) === Number(currentUserId);
-    const authorLabel =
-      mode === "group"
-        ? isMine
-          ? "You"
-          : resolveKnownUsername(message.user_id) || `Member #${message.user_id}`
+    const prev = orderedMessages[index - 1];
+    const next = orderedMessages[index + 1];
+    const samePrev =
+      prev &&
+      ((activeChat.type === "group" && Number(prev.user_id) === Number(message.user_id)) ||
+        (activeChat.type === "dm" && Number(prev.sender_id) === Number(message.sender_id)));
+    const sameNext =
+      next &&
+      ((activeChat.type === "group" && Number(next.user_id) === Number(message.user_id)) ||
+        (activeChat.type === "dm" && Number(next.sender_id) === Number(message.sender_id)));
+    const senderLabel =
+      activeChat.type === "group"
+        ? resolveUsername(message.user_id)
         : isMine
-          ? "You"
-          : `@${activeDmUsername}`;
-
-    const hasFile = message.file_name && message.file_path;
+          ? "Tú"
+          : `@${activeChat.id}`;
+    const hasFile = Boolean(message.file_name && message.file_path);
+    const receipt = receiptsByMessageId[message.id];
+    const readState =
+      !isMine || activeChat.type !== "dm"
+        ? null
+        : receipt?.read_at || message.is_read
+          ? { icon: "✓✓", className: "text-sky-200" }
+          : receipt?.delivered_at
+            ? { icon: "✓✓", className: "text-white/75" }
+            : { icon: "✓", className: "text-white/75" };
 
     return (
       <div
-        key={`${mode}-server-${message.id}`}
-        className={[
-          "max-w-[78%] rounded-2xl px-4 py-3 shadow-sm",
-          isMine
-            ? "ml-auto text-white bg-gradient-to-b from-[rgb(var(--primary))] to-[rgb(var(--primary2))]"
-            : "border border-[rgb(var(--border))] bg-[rgb(var(--panel2))] text-[rgb(var(--text))]",
-        ].join(" ")}
+        key={`message-${message.id}`}
+        className={["group relative max-w-[85vw] md:max-w-[82%] px-[14px] py-[10px] msg-enter", isMine ? "ml-auto" : ""].join(" ")}
+        onMouseEnter={() => setBubbleActionId(message.id)}
+        onMouseLeave={() => setBubbleActionId((prevId) => (prevId === message.id ? null : prevId))}
+        onTouchStart={() => setBubbleActionId(message.id)}
+        style={{
+          borderTopLeftRadius: samePrev ? 8 : 18,
+          borderTopRightRadius: samePrev ? 8 : 18,
+          borderBottomRightRadius: isMine ? (sameNext ? 8 : 4) : 18,
+          borderBottomLeftRadius: isMine ? 18 : sameNext ? 8 : 4,
+          background: isMine
+            ? "linear-gradient(135deg, rgb(var(--chat-bubble-mine-from)), rgb(var(--chat-bubble-mine-to)))"
+            : "rgb(var(--chat-bubble-other))",
+          border: isMine ? "none" : "1px solid rgba(255,255,255,0.06)",
+          boxShadow: isMine ? "0 2px 12px rgba(99,102,241,0.25)" : "none",
+        }}
       >
-        <div
-          className={[
-            "text-xs font-semibold",
-            isMine ? "text-white/85" : "text-[rgb(var(--muted))]",
-          ].join(" ")}
-        >
-          {authorLabel}
+        <div className={["text-[11px] font-semibold uppercase tracking-[0.05em]", isMine ? "text-white/85" : "text-[#a5b4fc]"].join(" ")}>
+          {senderLabel}
         </div>
-        
-        {hasFile && (
-          <div className={[
-            "mt-2 rounded-xl px-3 py-2 border",
-            isMine 
-              ? "bg-white/10 border-white/20" 
-              : "bg-[rgb(var(--panel))] border-[rgb(var(--border))]"
-          ].join(" ")}>
+        {hasFile ? (
+          <div className={["mt-1.5 rounded-xl px-2.5 py-2 border", isMine ? "border-white/20 bg-white/10" : "border-[rgb(var(--border))] bg-[rgb(var(--panel))]"].join(" ")}>
             <div className="flex items-center gap-2">
-              <span className="text-lg">📎</span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold truncate">
-                  {message.file_name}
-                </div>
-                <div className={[
-                  "text-xs",
-                  isMine ? "text-white/70" : "text-[rgb(var(--muted))]"
-                ].join(" ")}>
-                  {humanFileSize(message.file_size)}
-                </div>
+              <span>📎</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{message.file_name}</div>
+                <div className="text-[11px] opacity-80">{humanFileSize(message.file_size)}</div>
               </div>
               <a
                 href={getFileDownloadUrl(message.id)}
-                download={message.file_name}
                 target="_blank"
                 rel="noopener noreferrer"
-                className={[
-                  "rounded-lg px-3 py-1.5 text-xs font-medium transition",
-                  isMine
-                    ? "bg-white/20 hover:bg-white/30 text-white"
-                    : "bg-[rgb(var(--primary))] hover:bg-[rgb(var(--primary2))] text-white"
-                ].join(" ")}
+                className={["text-[11px] rounded-lg px-2 py-1 font-semibold", isMine ? "bg-white/20" : "bg-[rgb(var(--primary))] text-white"].join(" ")}
               >
-                Download
+                Abrir
               </a>
             </div>
           </div>
-        )}
-        
-        {message.content && (
-          <div className="mt-2 text-sm whitespace-pre-wrap break-words">
-            {message.content}
-          </div>
-        )}
-        
+        ) : null}
+        {message.content ? <div className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-[1.5]">{message.content}</div> : null}
+        <div className={["mt-1.5 flex items-center justify-end gap-1 text-[11px] opacity-70", isMine ? "text-white/85" : "text-[rgb(var(--muted))]"].join(" ")}>
+          <span>{formatTime(message.created_at)}</span>
+          {readState ? <span className={readState.className}>{readState.icon}</span> : null}
+        </div>
         <div
           className={[
-            "mt-2 text-[11px]",
-            isMine ? "text-white/85" : "text-[rgb(var(--muted))]",
+            "pointer-events-none absolute -top-3 flex gap-1 rounded-full border border-white/10 bg-[#0f1117]/90 px-2 py-1 text-[11px] text-white transition-opacity duration-150",
+            isMine ? "right-2" : "left-2",
+            bubbleActionId === message.id ? "opacity-100" : "opacity-0",
           ].join(" ")}
         >
-          {formatTimestamp(message.created_at)}
-          {mode === "dm" && isMine ? ` · ${message.is_read ? "Read" : "Sent"}` : ""}
+          <span>👍</span>
+          <span>❤️</span>
+          <span>🔥</span>
         </div>
       </div>
     );
   }
-
-  function renderLocalFileMessage(message) {
-    const statusLabel =
-      message.status === "on_hold"
-        ? "On hold"
-        : "UI ready · backend pending";
-
-    return (
-      <div
-        key={`local-file-${message.id}`}
-        className="ml-auto max-w-[78%] rounded-2xl border border-dashed border-sky-400/30 bg-sky-400/10 px-4 py-3 text-sky-50"
-      >
-        <div className="text-xs font-semibold text-sky-100">
-          You · File attachment
-        </div>
-        <div className="mt-2 text-sm font-semibold break-words">
-          {message.fileName}
-        </div>
-        <div className="mt-1 text-xs text-sky-100/90">
-          {humanFileSize(message.fileSize)} · {message.fileType}
-        </div>
-        {message.note ? (
-          <div className="mt-2 rounded-xl bg-black/10 px-3 py-2 text-sm text-sky-50/95">
-            Local note: {message.note}
-          </div>
-        ) : null}
-        <div className="mt-2 text-[11px] text-sky-100/90">
-          {formatTimestamp(message.createdAt)} · {statusLabel}
-        </div>
-      </div>
-    );
-  }
-
-  const timelineItems = [
-    ...activeMessages.map((message) => ({
-      kind: "server",
-      timestamp:
-        parseMessageDate(message.created_at) || Number(message.id) || 0,
-      payload: message,
-    })),
-    ...localFiles.map((message) => ({
-      kind: "local-file",
-      timestamp: parseMessageDate(message.createdAt) || 0,
-      payload: message,
-    })),
-  ].sort((a, b) => a.timestamp - b.timestamp);
-
-  const statusMeta = getStatusMeta();
-  const activeConversationLabel =
-    mode === "group"
-      ? activeGroup
-        ? `${activeGroup.name} (#${activeGroup.id})`
-        : "Select a group"
-      : activeDmUsername
-        ? `@${activeDmUsername}`
-        : "Open a direct chat";
 
   return (
-    <div className="flex h-[calc(100dvh-10.5rem)] min-h-[640px] flex-col gap-4 overflow-hidden">
-      <div className="flex flex-wrap items-end justify-between gap-3 flex-shrink-0">
-        <div>
-          <h1 className="text-2xl font-semibold text-[rgb(var(--text))]">Chat</h1>
-          <p className="mt-1 text-sm text-[rgb(var(--muted))]">
-            Active as <span className="font-semibold text-[rgb(var(--text))]">@{currentUsername}</span>. This tab keeps its own session, queued text messages and local file drafts.
-          </p>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setShowInfoModal(true)}
-          className="flex items-center gap-3 rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--panel))] px-3 py-2 text-left transition hover:bg-[rgb(var(--panel2))]"
-        >
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-b from-[rgb(var(--primary))] to-[rgb(var(--primary2))] text-sm font-semibold text-white">
-            {currentUsername.slice(0, 2).toUpperCase()}
-          </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-[rgb(var(--text))]">
-              @{currentUsername}
-            </div>
-            <div className="text-xs text-[rgb(var(--muted))]">
-              Profile & current chat
-            </div>
-          </div>
-        </button>
-      </div>
-
+    <div className="h-[calc(100dvh-7.5rem)] min-h-[620px] overflow-hidden">
       {error ? (
-        <div className="flex-shrink-0 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+        <div className="mb-3 rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
           {error}
         </div>
       ) : null}
 
-      {socketNote ? (
-        <div className="flex-shrink-0 rounded-xl border border-[rgb(var(--border))] bg-[rgb(var(--panel2))] px-3 py-2 text-sm text-[rgb(var(--muted))]">
-          {socketNote}
-        </div>
-      ) : null}
-
-      <div className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-[340px_minmax(0,1fr)]">
-        <Card className="flex min-h-0 flex-col overflow-hidden p-4">
-          <div className="flex items-center gap-2">
-            <Button
-              variant={mode === "group" ? "primary" : "secondary"}
-              onClick={() => setMode("group")}
-            >
-              Groups
-            </Button>
-            <Button
-              variant={mode === "dm" ? "primary" : "secondary"}
-              onClick={() => setMode("dm")}
-            >
-              Direct
-            </Button>
+      <div className="grid h-full gap-2 overflow-hidden lg:grid-cols-[360px_minmax(0,1fr)]">
+        <Card
+          className={[
+            "min-h-0 flex-col overflow-hidden p-3",
+            mobilePane === "list" ? "flex" : "hidden",
+            "lg:flex",
+          ].join(" ")}
+          style={{ background: "rgb(var(--chat-sidebar))", borderColor: "rgba(255,255,255,0.05)" }}
+        >
+          <div className="px-2 pb-3">
+            <h1 className="text-xl font-extrabold tracking-[-0.02em]">Mensajes</h1>
+            <p className="text-xs text-[rgb(var(--muted))] opacity-80">Conectado como @{currentUsername}</p>
           </div>
 
-          {mode === "group" ? (
-            <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-              {groups.length === 0 ? (
-                <div className="text-sm text-[rgb(var(--muted))]">
-                  No joined groups yet. Create or join one first.
-                </div>
-              ) : null}
+          <div className="px-2">
+            <Input
+              placeholder="Buscar grupos o chats..."
+              value={sidebarSearch}
+              onChange={(e) => setSidebarSearch(e.target.value)}
+              className="rounded-2xl border-none bg-[#0f1117] text-[14px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
+            />
+          </div>
 
-              {groups.map((group) => {
-                const isActive = Number(group.id) === Number(activeGroupId);
+          <div className="mt-3 px-2">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                startDirectChat();
+              }}
+              className="flex items-center gap-2"
+            >
+              <Input
+                placeholder="Nuevo directo por username"
+                value={newDmInput}
+                onChange={(e) => setNewDmInput(e.target.value)}
+              />
+              <Button className="shrink-0" disabled={!newDmInput.trim()}>
+                Abrir
+              </Button>
+            </form>
+          </div>
+
+          <div className="mt-3 px-2 space-y-2">
+            <button
+              type="button"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left text-sm font-semibold"
+              onClick={() => {
+                setShowGroupPanel((prev) => !prev);
+                setShowJoinPanel(false);
+              }}
+            >
+              + Crear grupo
+            </button>
+            {showGroupPanel ? (
+              <form
+                onSubmit={onCreateGroup}
+                className="fixed inset-x-3 bottom-3 z-30 space-y-2 rounded-2xl border border-white/10 bg-[#1a1d2e] p-3 shadow-2xl md:static md:inset-auto md:bottom-auto md:z-auto md:rounded-xl md:p-2"
+              >
+                <Input
+                  placeholder="Nombre del grupo"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  className="border-none bg-[#0f1117]"
+                />
+                <Input
+                  placeholder="Descripción (opcional)"
+                  value={newGroupDescription}
+                  onChange={(e) => setNewGroupDescription(e.target.value)}
+                  className="border-none bg-[#0f1117]"
+                />
+                <Button className="w-full" disabled={!newGroupName.trim()}>
+                  Crear
+                </Button>
+              </form>
+            ) : null}
+            <button
+              type="button"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-left text-sm font-semibold"
+              onClick={() => {
+                setShowJoinPanel((prev) => !prev);
+                setShowGroupPanel(false);
+              }}
+            >
+              # Unirse por ID
+            </button>
+            {showJoinPanel ? (
+              <form
+                onSubmit={onJoinGroup}
+                className="fixed inset-x-3 bottom-3 z-30 flex items-center gap-2 rounded-2xl border border-white/10 bg-[#1a1d2e] p-3 shadow-2xl md:static md:inset-auto md:bottom-auto md:z-auto md:rounded-xl md:p-2"
+              >
+                <Input
+                  placeholder="ID de grupo"
+                  value={joinGroupId}
+                  onChange={(e) => setJoinGroupId(e.target.value)}
+                  inputMode="numeric"
+                  className="border-none bg-[#0f1117]"
+                />
+                <Button className="shrink-0" disabled={!joinGroupId.trim()}>
+                  Unir
+                </Button>
+              </form>
+            ) : null}
+          </div>
+
+          <div className="chat-scrollbar mt-4 min-h-0 flex-1 overflow-y-auto px-2">
+            <div className="mb-2 text-[10px] uppercase tracking-[0.1em] opacity-35">GROUPS</div>
+            <div className="space-y-1.5">
+              {filteredGroups.map((group) => {
+                const active = activeChat.type === "group" && Number(activeChat.id) === Number(group.id);
+                const meta = groupMetaById[group.id] || { preview: "Sin mensajes", time: null };
                 return (
                   <button
-                    key={group.id}
-                    onClick={() => {
-                      setMode("group");
-                      setActiveGroupId(group.id);
-                      setError("");
-                    }}
+                    key={`group-${group.id}`}
+                    onClick={() => openGroup(group.id)}
                     className={[
-                      "w-full text-left rounded-2xl border px-4 py-3 transition",
-                      "border-[rgb(var(--border))]",
-                      isActive ? "bg-[rgb(var(--panel2))]" : "hover:bg-[rgb(var(--panel2))]",
+                      "w-full rounded-[10px] px-3 py-2 text-left transition-[background] duration-100",
+                      active
+                        ? "border-l-2 border-l-[#6366f1] bg-[rgba(99,102,241,0.15)]"
+                        : "hover:bg-[rgba(255,255,255,0.04)]",
                     ].join(" ")}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-[rgb(var(--text))]">
-                          #{group.id} {group.name}
-                        </div>
-                        <div className="truncate text-xs text-[rgb(var(--muted))]">
-                          {group.description || "No description"}
-                        </div>
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+                        style={{ backgroundImage: avatarGradient(group.name) }}
+                      >
+                        {avatarInitials(group.name)}
                       </div>
-                      {isActive ? (
-                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-200">
-                          Open
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="truncate text-sm font-semibold">{group.name}</div>
+                          <div className="text-[11px] text-[rgb(var(--muted))]">{formatTime(meta.time)}</div>
+                        </div>
+                        <div className="truncate text-[12px] text-[rgb(var(--muted))]">{meta.preview}</div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mb-2 mt-4 text-[10px] uppercase tracking-[0.1em] opacity-35">DIRECT</div>
+            <div className="space-y-1.5 pb-3">
+              {filteredDms.map((username) => {
+                const active = activeChat.type === "dm" && activeChat.id === username;
+                const unreadCount = unreadByDm[username] || 0;
+                const meta = dmMetaByUsername[username] || { preview: "Sin mensajes", time: null };
+                return (
+                  <button
+                    key={`dm-${username}`}
+                    onClick={() => openDm(username)}
+                    className={[
+                      "w-full rounded-[10px] px-3 py-2 text-left transition-[background] duration-100",
+                      active
+                        ? "border-l-2 border-l-[#6366f1] bg-[rgba(99,102,241,0.15)]"
+                        : "hover:bg-[rgba(255,255,255,0.04)]",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+                        style={{ backgroundImage: avatarGradient(username) }}
+                      >
+                        {avatarInitials(username)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="truncate text-sm font-semibold">@{username}</div>
+                          <div className="text-[11px] text-[rgb(var(--muted))]">{formatTime(meta.time)}</div>
+                        </div>
+                        <div className="truncate text-[12px] text-[rgb(var(--muted))]">{meta.preview}</div>
+                      </div>
+                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 online-pulse" />
+                      {unreadCount > 0 ? (
+                        <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-[rgb(var(--primary))] px-1.5 text-[10px] font-bold text-white">
+                          {unreadCount}
                         </span>
                       ) : null}
                     </div>
@@ -743,374 +800,180 @@ export default function Chat() {
                 );
               })}
             </div>
-          ) : (
-            <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  openDm(dmInput);
-                }}
-                className="space-y-2"
-              >
-                <Input
-                  label="Username"
-                  placeholder="Open a direct chat by username"
-                  value={dmInput}
-                  onChange={(e) => setDmInput(e.target.value)}
-                />
-                <Button className="w-full" disabled={!dmInput.trim()}>
-                  Open direct chat
-                </Button>
-              </form>
-
-              <div className="rounded-xl border border-[rgb(var(--border))] bg-[rgb(var(--panel2))] px-3 py-2 text-xs text-[rgb(var(--muted))]">
-                Unread direct messages: {unreadDmCount}
-              </div>
-
-              {recentDmUsernames.length === 0 ? (
-                <div className="text-sm text-[rgb(var(--muted))]">
-                  No recent direct chats yet.
-                </div>
-              ) : null}
-
-              {recentDmUsernames.map((username) => {
-                const isActive = username === activeDmUsername;
-                return (
-                  <div
-                    key={username}
-                    className={[
-                      "rounded-2xl border px-3 py-3 transition",
-                      "border-[rgb(var(--border))]",
-                      isActive ? "bg-[rgb(var(--panel2))]" : "hover:bg-[rgb(var(--panel2))]",
-                    ].join(" ")}
-                  >
-                    <button
-                      className="w-full text-left"
-                      onClick={() => openDm(username)}
-                    >
-                      <div className="text-sm font-semibold text-[rgb(var(--text))]">
-                        @{username}
-                      </div>
-                      <div className="text-xs text-[rgb(var(--muted))]">
-                        Direct conversation
-                      </div>
-                    </button>
-
-                    <div className="mt-3 flex gap-2">
-                      <Button
-                        variant="secondary"
-                        className="flex-1"
-                        onClick={() => openDm(username)}
-                      >
-                        Open
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        className="px-3"
-                        onClick={() => forgetDm(username)}
-                      >
-                        Forget
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          </div>
         </Card>
 
-        <Card className="flex h-full min-h-0 flex-col overflow-hidden p-0">
-          <div className="flex flex-shrink-0 items-center gap-3 border-b border-[rgb(var(--border))] bg-[rgb(var(--panel))] px-4 py-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-b from-[rgb(var(--primary))] to-[rgb(var(--primary2))] text-sm font-semibold text-white">
-              {mode === "group"
-                ? (activeGroup?.name || "G").slice(0, 2).toUpperCase()
-                : (activeDmUsername || "DM").slice(0, 2).toUpperCase()}
+        <Card
+          className={[
+            "relative min-h-0 flex-col overflow-hidden p-0",
+            mobilePane === "chat" ? "flex" : "hidden",
+            "lg:flex",
+          ].join(" ")}
+          style={{ background: "rgb(var(--chat-main))", borderColor: "rgba(255,255,255,0.05)" }}
+        >
+          <div className="flex items-center gap-3 border-b px-4 py-2.5" style={{ borderColor: "rgba(255,255,255,0.06)", background: "rgb(var(--chat-main))" }}>
+            <Button
+              type="button"
+              variant="ghost"
+              className="lg:hidden"
+              onClick={() => setMobilePane("list")}
+            >
+              ←
+            </Button>
+            <div
+              className="flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold text-white"
+              style={{ backgroundImage: avatarGradient(activeChat.type === "group" ? activeGroup?.name : activeChat.id) }}
+            >
+              {avatarInitials(activeChat.type === "group" ? activeGroup?.name || "?" : activeChat.id || "?")}
             </div>
-
             <div className="min-w-0">
-              <div className="text-sm font-semibold text-[rgb(var(--text))] truncate">
-                {activeConversationLabel}
+              <div className="truncate text-sm font-bold">
+                {activeChat.type === "group"
+                  ? activeGroup
+                    ? `${activeGroup.name} · #${activeGroup.id}`
+                    : "Selecciona un grupo"
+                  : activeChat.id
+                    ? `@${activeChat.id}`
+                    : "Abre un chat directo"}
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                <span
-                  className={[
-                    "rounded-full border px-2 py-0.5 font-semibold",
-                    statusMeta.chipClass,
-                  ].join(" ")}
-                >
-                  {statusMeta.label}
-                </span>
-                <span className="text-[rgb(var(--muted))]">
-                  {statusMeta.helper}
-                </span>
+              <div className="text-xs text-[rgb(var(--muted))]">
+                {socketStatus === "online" ? "Online" : socketStatus === "connecting" ? "Conectando..." : "Offline"} · {activeChat.type === "group" ? "Miembros activos" : "Direct chat"}
               </div>
             </div>
-
-            <div className="flex-1" />
-
-            <Button
-              variant="secondary"
-              onClick={() =>
-                mode === "group"
-                  ? loadGroupHistory(activeGroupId)
-                  : loadDmHistory(activeDmUsername)
-              }
-            >
-              Refresh
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => setShowInfoModal(true)}
-            >
-              Info
-            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <button type="button" className="h-8 w-8 rounded-full border border-white/10 bg-white/5 text-sm hover:bg-white/10" title="Buscar">
+                🔍
+              </button>
+              <button type="button" className="h-8 w-8 rounded-full border border-white/10 bg-white/5 text-sm hover:bg-white/10" title="Info">
+                ℹ
+              </button>
+              <Button
+                variant="secondary"
+                className="h-8 w-8 rounded-full p-0"
+                onClick={() =>
+                  activeChat.type === "group" ? loadGroupHistory(activeChat.id) : loadDmHistory(activeChat.id)
+                }
+                disabled={!canSend}
+                title="Refresh"
+              >
+                ↻
+              </Button>
+            </div>
           </div>
 
-          {queuedMessages.length > 0 ? (
-            <div className="flex-shrink-0 border-b border-[rgb(var(--border))] bg-amber-500/10 px-4 py-2 text-xs text-amber-100">
-              {queuedMessages.length} text message{queuedMessages.length === 1 ? "" : "s"} on hold for this chat. They will send automatically when the connection returns.
+          {socketNote ? (
+            <div className="border-b border-[rgb(var(--border))] bg-[rgb(var(--panel2))] px-4 py-2 text-xs text-[rgb(var(--muted))]">
+              {socketNote}
             </div>
           ) : null}
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 space-y-3">
-            {loading ? (
-              <div className="text-sm text-[rgb(var(--muted))]">Loading conversation...</div>
-            ) : null}
-
-            {!loading && timelineItems.length === 0 && queuedMessages.length === 0 ? (
-              <div className="max-w-[78%] rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--panel2))] px-4 py-3 text-sm text-[rgb(var(--muted))]">
-                No messages yet for this conversation.
+          <div ref={timelineRef} onScroll={onTimelineScroll} className="chat-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3">
+            {loading ? <div className="text-sm text-[rgb(var(--muted))]">Cargando mensajes...</div> : null}
+            {!loading && timelineItems.length === 0 ? (
+              <div className="mx-auto mt-12 max-w-sm rounded-2xl border border-white/10 bg-white/5 p-6 text-center">
+                <div className="mb-2 text-2xl">💬</div>
+                <div className="text-sm font-semibold">No hay mensajes aún</div>
+                <div className="text-xs text-[rgb(var(--muted))]">Envía el primer mensaje para iniciar esta conversación.</div>
               </div>
             ) : null}
-
             {!loading &&
               timelineItems.map((item) =>
-                item.kind === "server"
-                  ? renderServerMessage(item.payload)
-                  : renderLocalFileMessage(item.payload)
+                item.kind === "divider" ? (
+                  <div key={item.id} className="flex justify-center py-1">
+                    <span className="rounded-full border border-white/10 bg-[rgba(255,255,255,0.06)] px-3 py-[3px] text-[11px] text-[rgb(var(--muted))]">
+                      {item.label}
+                    </span>
+                  </div>
+                ) : (
+                  renderMessageBubble(item.payload, orderedMessages.findIndex((msg) => msg.id === item.payload.id))
+                )
               )}
-
-            {queuedMessages.map((message) => (
-              <div
-                key={`hold-${message.id}`}
-                className="ml-auto max-w-[78%] rounded-2xl border border-dashed border-amber-400/30 bg-amber-400/10 px-4 py-3 text-amber-50"
-              >
-                <div className="text-xs font-semibold text-amber-100">
-                  You · On hold
-                </div>
-                <div className="mt-2 text-sm whitespace-pre-wrap break-words">
-                  {message.text}
-                </div>
-                <div className="mt-2 text-[11px] text-amber-100/90">
-                  {formatTimestamp(message.createdAt)} · Waiting for the chat to come back online
-                </div>
+            {typingPreview ? (
+              <div className="text-xs text-[rgb(var(--muted))]">
+                escribiendo<span className="animate-pulse">...</span>
               </div>
-            ))}
-
-            <div ref={messagesEndRef} />
+            ) : null}
+            <div ref={bottomRef} />
           </div>
+          {showScrollButton ? (
+            <button
+              type="button"
+              onClick={() => scrollToBottom(true)}
+              className="absolute bottom-24 right-6 z-10 h-10 w-10 rounded-full bg-[rgb(var(--primary))] text-white shadow-lg"
+              title="Ir abajo"
+            >
+              ↓
+            </button>
+          ) : null}
 
-          <form
-            onSubmit={onSend}
-            className="flex-shrink-0 border-t border-[rgb(var(--border))] bg-[rgb(var(--panel))] p-3"
-          >
+          <form onSubmit={onSend} className="border-t p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]" style={{ borderColor: "rgba(255,255,255,0.06)", background: "#1a1d2e" }}>
             {selectedFile ? (
-              <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-sky-400/20 bg-sky-400/10 px-3 py-2">
+              <div className="mb-2 flex items-center justify-between gap-2 rounded-xl bg-[rgb(var(--panel2))] px-3 py-2">
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-sky-100">
-                    {selectedFile.name}
-                  </div>
-                  <div className="text-xs text-sky-100/80">
-                    {humanFileSize(selectedFile.size)} · UI-only until backend upload support exists
-                  </div>
+                  <div className="truncate text-sm font-medium">{selectedFile.name}</div>
+                  <div className="text-[11px] text-[rgb(var(--muted))]">{humanFileSize(selectedFile.size)}</div>
                 </div>
                 <Button
                   type="button"
                   variant="ghost"
                   onClick={() => {
                     setSelectedFile(null);
-                    if (fileInputRef.current) {
-                      fileInputRef.current.value = "";
-                    }
+                    if (fileInputRef.current) fileInputRef.current.value = "";
                   }}
                 >
-                  Remove
+                  Quitar
                 </Button>
               </div>
             ) : null}
 
-            <div className="flex items-center gap-2">
+            <div className="flex min-h-[56px] items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
                 onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
               />
-
               <Button
                 type="button"
-                variant="secondary"
+                variant="ghost"
+                className="h-11 w-11 rounded-full p-0 opacity-40 hover:opacity-100"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={!canTargetConversation || socketStatus === "blocked"}
+                disabled={!canSend || activeChat.type !== "dm"}
               >
-                Attach
+                +
               </Button>
-
-              <div className="flex-1">
-                <Input
+              <div className="flex-1 rounded-[24px] bg-[#0f1117] px-3 py-2 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)] focus-within:shadow-[0_0_0_2px_rgba(99,102,241,0.45)]">
+                <textarea
                   placeholder={
-                    mode === "group"
-                      ? activeGroupId
-                        ? socketStatus === "online"
-                          ? "Send a group message..."
-                          : "Write now, it will stay on hold if offline"
-                        : "Select a group first"
-                      : activeDmUsername
-                        ? socketStatus === "online"
-                          ? `Message @${activeDmUsername}`
-                          : `Write to @${activeDmUsername}; it will stay on hold if offline`
-                        : "Open a direct chat first"
+                    activeChat.type === "group"
+                      ? "Escribe un mensaje..."
+                      : activeChat.id
+                        ? `Mensaje para @${activeChat.id}`
+                        : "Abre un chat directo"
                   }
                   value={composer}
                   onChange={(e) => setComposer(e.target.value)}
-                  disabled={!canTargetConversation || socketStatus === "blocked"}
+                  disabled={!canSend || socketStatus === "blocked"}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      onSend(e);
+                    }
+                  }}
+                  rows={1}
+                  className="chat-scrollbar max-h-28 w-full resize-none bg-transparent text-[14px] leading-[1.5] outline-none placeholder:text-[rgb(var(--muted))]"
                 />
               </div>
               <Button
-                disabled={
-                  (!composer.trim() && !selectedFile) ||
-                  !canTargetConversation ||
-                  socketStatus === "blocked"
-                }
+                className="h-11 w-11 rounded-full p-0"
+                disabled={(!composer.trim() && !selectedFile) || !canSend || socketStatus === "blocked"}
               >
-                {socketStatus === "online" ? "Send" : "Hold"}
+                →
               </Button>
-            </div>
-
-            <div className="mt-2 text-xs text-[rgb(var(--muted))]">
-              Text messages are sent live when online and queued when offline. File attachments are already testable in the UI, but they stay local until backend upload support exists.
             </div>
           </form>
         </Card>
       </div>
-
-      {showInfoModal ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm"
-          onClick={() => setShowInfoModal(false)}
-        >
-          <Card
-            className="w-full max-w-[560px] p-5"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-b from-[rgb(var(--primary))] to-[rgb(var(--primary2))] text-lg font-semibold text-white">
-                {currentUsername.slice(0, 2).toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-lg font-semibold text-[rgb(var(--text))]">
-                  @{currentUsername}
-                </div>
-                <div className="text-sm text-[rgb(var(--muted))]">
-                  User ID {currentUserId ?? "?"}
-                </div>
-              </div>
-              <Button variant="ghost" onClick={() => setShowInfoModal(false)}>
-                Close
-              </Button>
-            </div>
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <Card className="p-4 bg-[rgb(var(--panel2))]">
-                <div className="text-sm font-semibold text-[rgb(var(--text))]">
-                  Current chat
-                </div>
-                <div className="mt-2 text-sm text-[rgb(var(--muted))]">
-                  {mode === "group"
-                    ? activeGroup
-                      ? `${activeGroup.name} · Group #${activeGroup.id}`
-                      : "No group selected"
-                    : activeDmUsername
-                      ? `Direct with @${activeDmUsername}`
-                      : "No direct chat selected"}
-                </div>
-                {mode === "group" && activeGroup?.description ? (
-                  <div className="mt-2 text-xs text-[rgb(var(--muted))]">
-                    {activeGroup.description}
-                  </div>
-                ) : null}
-              </Card>
-
-              <Card className="p-4 bg-[rgb(var(--panel2))]">
-                <div className="text-sm font-semibold text-[rgb(var(--text))]">
-                  Delivery state
-                </div>
-                <div className="mt-2 text-sm text-[rgb(var(--muted))]">
-                  {statusMeta.label}
-                </div>
-                <div className="mt-1 text-xs text-[rgb(var(--muted))]">
-                  Queued text: {queuedMessages.length}
-                </div>
-                <div className="mt-1 text-xs text-[rgb(var(--muted))]">
-                  Local files: {localFiles.length}
-                </div>
-              </Card>
-            </div>
-
-            <Card className="mt-4 p-4 bg-[rgb(var(--panel2))]">
-              <div className="text-sm font-semibold text-[rgb(var(--text))]">
-                Actions
-              </div>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <Button
-                  variant="secondary"
-                  onClick={() =>
-                    mode === "group"
-                      ? loadGroupHistory(activeGroupId)
-                      : loadDmHistory(activeDmUsername)
-                  }
-                  disabled={!canTargetConversation}
-                >
-                  Refresh current chat
-                </Button>
-
-                <Button
-                  variant="secondary"
-                  onClick={() => clearQueuedMessages(activeThreadKey)}
-                  disabled={queuedMessages.length === 0}
-                >
-                  Clear on-hold text
-                </Button>
-
-                <Button
-                  variant="secondary"
-                  onClick={() => clearLocalFiles(activeThreadKey)}
-                  disabled={localFiles.length === 0}
-                >
-                  Clear local files
-                </Button>
-
-                {mode === "dm" ? (
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      forgetDm(activeDmUsername);
-                      setShowInfoModal(false);
-                    }}
-                    disabled={!activeDmUsername}
-                  >
-                    Forget this direct chat
-                  </Button>
-                ) : null}
-
-                <Button variant="ghost" onClick={() => navigate("/groups")}>
-                  Back to groups
-                </Button>
-              </div>
-            </Card>
-          </Card>
-        </div>
-      ) : null}
     </div>
   );
 }

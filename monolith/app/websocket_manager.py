@@ -1,5 +1,5 @@
 from fastapi import WebSocket
-from typing import Dict, List, Tuple, Set
+from typing import Any, Dict, List, Set, Tuple
 
 class ConnectionManager:
     def __init__(self):
@@ -33,6 +33,10 @@ class ConnectionManager:
     async def broadcast(self, group_id: int, message: str):
         for connection in self.active_connections.get(group_id, []):
             await connection.send_text(message)
+
+    async def broadcast_json(self, group_id: int, payload: Dict[str, Any]):
+        for connection in self.active_connections.get(group_id, []):
+            await connection.send_json(payload)
     
     def _get_dm_key(self, user1_id: int, user2_id: int) -> Tuple[int, int]:
         """Genera una clave ordenada para la conversación entre dos usuarios"""
@@ -70,6 +74,11 @@ class ConnectionManager:
         key = self._get_dm_key(user1_id, user2_id)
         for connection in self.dm_connections.get(key, []):
             await connection.send_text(message)
+
+    async def broadcast_dm_json(self, user1_id: int, user2_id: int, payload: Dict[str, Any]):
+        key = self._get_dm_key(user1_id, user2_id)
+        for connection in self.dm_connections.get(key, []):
+            await connection.send_json(payload)
     
     def is_user_online(self, user_id: int) -> bool:
         """Verificar si un usuario está online"""
