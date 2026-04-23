@@ -27,6 +27,12 @@ spec:
           value: "60"
         - name: UPLOAD_DIR
           value: "uploads"
+        - name: ETCD_ENDPOINT
+          value: "http://etcd:2379"
+        - name: DISTRIBUTION_SHARDS
+          value: "4"
+        - name: DISTRIBUTION_REPLICATION_FACTOR
+          value: "2"
         ports:
         - containerPort: 8000
 ---

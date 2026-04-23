@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Set, Tuple
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[int, List[WebSocket]] = {}
+        self.group_user_connections: Dict[int, Dict[int, Set[WebSocket]]] = {}
         self.dm_connections: Dict[Tuple[int, int], List[WebSocket]] = {}
         # Rastrear usuarios online: user_id -> set de websockets
         self.online_users: Dict[int, Set[WebSocket]] = {}
@@ -13,6 +14,11 @@ class ConnectionManager:
         if group_id not in self.active_connections:
             self.active_connections[group_id] = []
         self.active_connections[group_id].append(websocket)
+        if group_id not in self.group_user_connections:
+            self.group_user_connections[group_id] = {}
+        if user_id not in self.group_user_connections[group_id]:
+            self.group_user_connections[group_id][user_id] = set()
+        self.group_user_connections[group_id][user_id].add(websocket)
         
         # Registrar usuario como online
         if user_id not in self.online_users:
@@ -21,7 +27,16 @@ class ConnectionManager:
 
     def disconnect(self, group_id: int, websocket: WebSocket, user_id: int):
         if group_id in self.active_connections:
-            self.active_connections[group_id].remove(websocket)
+            if websocket in self.active_connections[group_id]:
+                self.active_connections[group_id].remove(websocket)
+            if not self.active_connections[group_id]:
+                del self.active_connections[group_id]
+        if group_id in self.group_user_connections and user_id in self.group_user_connections[group_id]:
+            self.group_user_connections[group_id][user_id].discard(websocket)
+            if not self.group_user_connections[group_id][user_id]:
+                del self.group_user_connections[group_id][user_id]
+            if not self.group_user_connections[group_id]:
+                del self.group_user_connections[group_id]
         
         # Remover conexión del usuario
         if user_id in self.online_users:
@@ -37,6 +52,9 @@ class ConnectionManager:
     async def broadcast_json(self, group_id: int, payload: Dict[str, Any]):
         for connection in self.active_connections.get(group_id, []):
             await connection.send_json(payload)
+
+    def get_group_online_user_ids(self, group_id: int) -> List[int]:
+        return list(self.group_user_connections.get(group_id, {}).keys())
     
     def _get_dm_key(self, user1_id: int, user2_id: int) -> Tuple[int, int]:
         """Genera una clave ordenada para la conversación entre dos usuarios"""

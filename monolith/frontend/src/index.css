@@ -10,42 +10,41 @@ body { margin: 0; }
 
 /* Theme tokens via data-theme */
 :root {
-  --bg: 248 250 252;          /* slate-50 */
-  --bg2: 241 245 249;         /* slate-100 */
+  --bg: 240 247 255;
+  --bg2: 230 240 255;
   --panel: 255 255 255;       /* white */
   --panel2: 255 255 255;
   --border: 15 23 42 / 0.08;  /* slate-900 alpha */
   --text: 15 23 42;           /* slate-900 */
   --muted: 71 85 105;         /* slate-600 */
-  --primary: 37 99 235;       /* blue-600 */
-  --primary2: 79 70 229;      /* indigo-600 */
-  --chat-main: 248 249 255;
-  --chat-sidebar: 240 243 255;
+  --primary: 0 122 255;
+  --primary2: 0 198 255;
+  --chat-main: 248 252 255;
+  --chat-sidebar: 238 245 255;
   --chat-panel: 255 255 255;
-  --chat-bubble-mine-from: 91 106 240;
-  --chat-bubble-mine-to: 124 58 237;
-  --chat-bubble-other: 232 236 253;
+  --chat-bubble-mine-from: 0 122 255;
+  --chat-bubble-mine-to: 0 198 255;
+  --chat-bubble-other: 230 240 255;
   --chat-separator: 15 23 42 / 0.08;
   color-scheme: light;
 }
 
 [data-theme="dark"] {
-  /* Pastel dark (no negro) */
-  --bg: 15 17 23;
-  --bg2: 19 21 30;
+  --bg: 8 12 24;
+  --bg2: 12 20 36;
   --panel: 255 255 255 / 0.07;/* glass */
   --panel2: 255 255 255 / 0.10;
   --border: 255 255 255 / 0.10;
   --text: 235 242 255;        /* soft white */
   --muted: 180 194 214;       /* pastel gray */
-  --primary: 99 102 241;
-  --primary2: 124 58 237;
-  --chat-main: 19 21 28;
-  --chat-sidebar: 15 17 23;
-  --chat-panel: 26 29 46;
-  --chat-bubble-mine-from: 91 106 240;
-  --chat-bubble-mine-to: 124 58 237;
-  --chat-bubble-other: 30 33 48;
+  --primary: 0 153 255;
+  --primary2: 77 196 255;
+  --chat-main: 10 14 24;
+  --chat-sidebar: 7 11 20;
+  --chat-panel: 16 23 38;
+  --chat-bubble-mine-from: 0 136 255;
+  --chat-bubble-mine-to: 0 198 255;
+  --chat-bubble-other: 18 26 42;
   --chat-separator: 255 255 255 / 0.06;
   color-scheme: dark;
 }
@@ -58,12 +57,36 @@ body {
 
 /* Utility helpers */
 .theme-bg {
-  background: linear-gradient(
-    135deg,
-    rgb(var(--bg)) 0%,
-    rgb(var(--bg2)) 55%,
-    rgb(var(--bg)) 100%
-  );
+  position: relative;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(var(--primary), 0.18), transparent 24%),
+    radial-gradient(circle at 88% 10%, rgba(var(--primary2), 0.16), transparent 20%),
+    radial-gradient(circle at 50% 100%, rgba(34, 211, 238, 0.10), transparent 28%),
+    linear-gradient(135deg, rgb(var(--bg)) 0%, rgb(var(--bg2)) 50%, rgb(var(--bg)) 100%);
+}
+
+.theme-bg::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.65;
+  background-image:
+    linear-gradient(rgba(var(--text), 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--text), 0.035) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(circle at center, black, transparent 80%);
+}
+
+.theme-bg::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.25;
+  background:
+    linear-gradient(120deg, transparent 0%, rgba(var(--primary), 0.10) 48%, transparent 52%),
+    linear-gradient(300deg, transparent 0%, rgba(var(--primary2), 0.10) 40%, transparent 44%);
 }
 
 .chat-scrollbar::-webkit-scrollbar {

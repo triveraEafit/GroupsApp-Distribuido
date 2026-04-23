@@ -1,140 +1,175 @@
 # GroupsApp Distribuido
 
-Aplicación de mensajería instantánea construida con arquitectura de microservicios, desplegada en Kubernetes.
+Aplicacion de mensajeria instantanea tipo WhatsApp/Telegram construida sobre una arquitectura hibrida: un `monolith` funcional con frontend React/Vite y varios servicios distribuidos de apoyo (`auth-service`, `messaging-service`, `presence-service`) mas `gateway`, Kafka, Redis, PostgreSQL y almacenamiento de archivos.
+
+Hoy el proyecto ya cubre el flujo principal de uso de la app y la mayor parte del alcance funcional del PDF. Lo que sigue pendiente para dejar la entrega casi cerrada es principalmente el despliegue real en nube y algunos componentes distribuidos de infraestructura.
+
+## Estado actual
+
+### Funcionalidades listas
+
+- Registro e inicio de sesion de usuarios
+- Chat grupal y chat directo
+- Historial persistente de mensajes
+- Envio y recepcion de archivos en grupos y DMs
+- Estados de entrega y lectura en grupos y DMs
+- Presencia online/offline
+- Creacion y administracion de grupos
+- Roles de grupo (`admin`, `moderator`, `member`)
+- Solicitudes de ingreso y aprobacion/rechazo
+- Contactos visibles dentro de los grupos
+- Canales/subgrupos dentro de los grupos
+- Busqueda en la conversacion activa
+- Vista de chat mejorada para desktop y mobile
+- Tema claro/oscuro y seccion base de `Settings`
+
+### Distribucion e infraestructura ya implementada
+
+- API REST
+- gRPC en `auth-service`
+- Kafka como MOM/event bus
+- Redis para presencia/cache
+- API Gateway con Nginx
+- Coordinacion distribuida con `etcd`
+- Particionamiento logico visible por grupo/canal
+- Manifests de Kubernetes
+- HPA para algunos servicios
+- Metricas Prometheus expuestas en FastAPI
+
+### Pendiente fuerte
+
+- Despliegue real en AWS, idealmente EKS
+- Reforzar evidencia de despliegue distribuido real en nube
+- Cerrar entregables externos del curso:
+  - informe tecnico PDF
+  - video demo
+  - aplicacion desplegada en nube
 
 ## Arquitectura
 
-El sistema está compuesto por los siguientes servicios:
+Servicios del repositorio:
 
-- **Frontend** (React/Vite) en puerto 5173
-- **API Gateway** (nginx) en puerto 8090
-- **Monolith** en puerto 8000
-- **Auth Service** en puerto 8001 con gRPC en puerto 50051
-- **Messaging Service** en puerto 8002
-- **Presence Service** en puerto 8003
-- **PostgreSQL** con 3 bases de datos separadas
-- **Redis** para presencia y caché
-- **Kafka** para eventos asíncronos
-- **Prometheus** en puerto 9090 para métricas
-- **Grafana** en puerto 3000 para dashboards
+- `monolith`: backend principal y WebSockets del chat
+- `monolith/frontend`: cliente React/Vite
+- `auth-service`: autenticacion y gRPC
+- `messaging-service`: servicio de mensajeria desacoplado
+- `presence-service`: presencia y eventos
+- `gateway`: entrada unificada por Nginx
+- `postgres`: persistencia
+- `redis`: presencia/cache
+- `kafka` + `zookeeper`: eventos asincronos
+- `etcd`: coordinacion distribuida
+- `minio`: almacenamiento de archivos
 
-## Checklist de requerimientos
+Nota importante: aunque existen varios microservicios, el estado actual sigue siendo hibrido. El frontend todavia consume buena parte del flujo principal a traves del `monolith`.
+
+## Checklist frente al PDF
 
 ### Funcionales
-- [x] Registro y autenticación de usuarios
-- [x] Creación y gestión de grupos
-- [x] Mensajería grupal en tiempo real (WebSocket)
-- [x] Mensajería directa 1-1
+
+- [x] Registro y autenticacion de usuarios
+- [x] Creacion y gestion de grupos
+- [x] Todo grupo tiene al menos un administrador
+- [x] Opciones base de suscripcion al grupo
+- [x] Creacion y gestion de contactos de mis grupos
+- [x] Mensajeria grupal 1-n
+- [x] Mensajeria persona a persona 1-1
 - [x] Persistencia e historial de mensajes
-- [x] Estado de presencia online/offline (Redis)
-- [x] Envío y recepción de archivos en DMs
-- [ ] Roles de administrador en grupos
-- [ ] Subida de archivos en grupos
+- [x] Presencia y lectura
+- [x] Envio y recepcion de archivos
+- [x] Visualizacion/descarga de archivos enviados
+- [x] Canales o subgrupos
+- [ ] Otros extras multimedia del enunciado opcional
 
-### No Funcionales
-- [x] Mínimo 3 microservicios (tenemos 4)
-- [x] API REST (todos los servicios)
-- [x] gRPC (Auth Service, puerto 50051)
-- [x] Kafka/MOM (Messaging + Presence Service)
-- [x] Bases de datos distribuidas (una por servicio)
-- [x] API Gateway con balanceador de carga (nginx)
-- [x] Kubernetes (Docker Desktop)
-- [x] Autoescalado HPA (messaging x5, presence x3)
-- [x] Alta disponibilidad
-- [x] Prometheus (métricas)
-- [x] Grafana (dashboards)
-- [ ] Despliegue en AWS EKS
-- [ ] Servicio de coordinación (etcd/Consul)
+### No funcionales
 
-## Requisitos previos
+- [x] Minimo 3 microservicios
+- [x] API REST para operaciones externas
+- [x] gRPC para comunicacion interna
+- [x] MOM con Kafka
+- [~] Datos distribuidos
+- [~] Replicacion/particionamiento demostrable
+- [x] Servicio de coordinacion
+- [ ] Despliegue real en AWS
+- [x] Ingress/gateway con balanceo
+- [~] Autoescalado y HA a nivel de manifests
+- [~] Logs y metricas basicas
 
-- Docker Desktop instalado, abierto y con Kubernetes habilitado
-- Node.js instalado
-- Git instalado
+`[~]` significa parcialmente cumplido: existe implementacion o base tecnica, pero no esta cerrada con evidencia de despliegue/operacion final.
 
-## Cómo correr el proyecto
+## Que falta del PDF
 
-### 1. Clonar el repositorio
+Tomando el enunciado de `ST0263-SI3007-261-Proyecto1_GroupsApp.docx.pdf`, lo mas importante que sigue faltando es:
 
-    git clone https://github.com/triveraEafit/GroupsApp-Distribuido.git
-    cd GroupsApp-Distribuido
+1. Despliegue en AWS, preferiblemente EKS.
+2. Evidencia mas solida en despliegue real de datos distribuidos con replicacion/particionamiento.
+3. Entregables finales del curso por fuera del codigo:
+   - informe tecnico en PDF
+   - video demo
+   - app desplegada en nube
 
-### 2. Desplegar el backend en Kubernetes
+Si la meta es "dejar solo despliegue por hacer", ahora si queda bastante razonable decirlo: ya hay canales, coordinacion con `etcd` y particionamiento logico visible; lo que falta defender fuerte es el despliegue real en nube y los entregables finales.
 
-    .\deploy.ps1
+## Ejecucion local
 
-Espera hasta que todos los pods estén en estado Running:
+### Opcion recomendada: Docker Compose + frontend
 
-    kubectl get pods
+Backend e infraestructura:
 
-### 3. Abrir los puertos (4 terminales separadas)
+```bash
+docker compose up -d
+```
 
-Terminal 1 — Gateway:
+Frontend:
 
-    kubectl port-forward service/gateway 8090:8080 --address 0.0.0.0
+```bash
+cd monolith/frontend
+npm install
+npm run dev
+```
 
-Terminal 2 — Grafana:
+### URLs locales
 
-    kubectl port-forward service/grafana 3000:3000
+- App frontend: `http://localhost:5173`
+- Gateway/API: `http://localhost:8080`
+- Monolith docs: `http://localhost:8000/docs`
+- Auth docs: `http://localhost:8001/docs`
+- Messaging docs: `http://localhost:8002/docs`
+- Presence docs: `http://localhost:8003/docs`
+- MinIO Console: `http://localhost:9001`
+- etcd: `http://localhost:2379`
 
-Terminal 3 — Prometheus:
+## Kubernetes
 
-    kubectl port-forward service/prometheus 9090:9090
+El repositorio incluye manifests en `k8s/` y un `deploy.ps1` para levantar la infraestructura en un cluster local. Esa ruta sirve para la demostracion tecnica de K8s, HPAs y observabilidad, pero no reemplaza el pendiente de despliegue real en AWS.
 
-Terminal 4 — Frontend:
+## Desarrollo
 
-    cd monolith\frontend
-    npm install
-    npm run dev
+### Frontend
 
-### 4. Abrir en el navegador
+```bash
+cd monolith/frontend
+npm install
+npm run dev
+npm run build
+```
 
-| Servicio | URL | Credenciales |
-|---|---|---|
-| App | http://localhost:5173 | - |
-| Grafana | http://localhost:3000 | admin / admin123 |
-| Prometheus | http://localhost:9090 | - |
+### Backend monolith
 
-## URLs de los servicios
+```bash
+python3 -m compileall monolith/app
+```
 
-| Servicio | URL |
-|---|---|
-| Monolito | http://localhost:8000/docs |
-| Auth Service | http://localhost:8001/docs |
-| Messaging Service | http://localhost:8002/docs |
-| Presence Service | http://localhost:8003/docs |
+## Repositorio
 
-## Comunicaciones entre servicios
+Para traer la ultima version:
 
-| Tipo | Usado en |
-|---|---|
-| REST | Todos los servicios (externo) |
-| gRPC | Auth Service puerto 50051 (interno) |
-| Kafka | Messaging a Presence (eventos async) |
-| WebSocket | Monolito a Frontend (chat tiempo real) |
+```bash
+git pull
+```
 
-## Autoescalado
+Para apagar el entorno local con Compose:
 
-El HPA (Horizontal Pod Autoscaler) está configurado:
-
-    kubectl get hpa
-
-| Servicio | Mínimo | Máximo | Trigger |
-|---|---|---|---|
-| Messaging Service | 1 pod | 5 pods | CPU mayor 50% |
-| Presence Service | 1 pod | 3 pods | CPU mayor 50% |
-
-## Cómo actualizar el repositorio
-
-    git add .
-    git commit -m "descripcion del cambio"
-    git push
-
-## Cómo obtener los últimos cambios
-
-    git pull
-    .\deploy.ps1
-
-## Detener el sistema
-
-    kubectl delete -f k8s/
+```bash
+docker compose down
+```

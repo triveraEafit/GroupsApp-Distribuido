@@ -1,5 +1,6 @@
 import time
 from contextlib import contextmanager
+import json
 
 from etcd3gw import client as etcd3_client
 
@@ -34,6 +35,32 @@ class CoordinationService:
         if not raw or not raw[0]:
             return default
         return raw[0][0].decode("utf-8")
+
+    def put_json(self, key: str, value: dict) -> bool:
+        if not self.enabled or self.client is None:
+            return False
+        try:
+            self.client.put(key, json.dumps(value))
+            return True
+        except Exception:
+            return False
+
+    def get_json(self, key: str, default: dict | None = None) -> dict:
+        raw = self.get_flag(key, "")
+        if not raw:
+            return default or {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return default or {}
+
+    def register_service(self, service_name: str, metadata: dict) -> bool:
+        payload = {
+            **metadata,
+            "service_name": service_name,
+            "registered_at": int(time.time()),
+        }
+        return self.put_json(f"/services/{service_name}", payload)
 
     @contextmanager
     def lock(self, lock_name: str):

@@ -34,8 +34,25 @@ class Group(Base):
     subscription_mode = Column(String, default="open", nullable=False)
     allow_member_invites = Column(Boolean, default=False, nullable=False)
     max_members = Column(Integer, nullable=True)
+    partition_slot = Column(Integer, default=0, nullable=False)
+    replica_group = Column(String, default="primary", nullable=False)
 
     owner = relationship("User")
+
+
+class GroupChannel(Base):
+    __tablename__ = "group_channels"
+    __table_args__ = (UniqueConstraint("group_id", "name", name="uq_group_channel_name"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    is_default = Column(Boolean, default=False, nullable=False)
+    partition_slot = Column(Integer, default=0, nullable=False)
+    replica_group = Column(String, default="primary", nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class GroupMember(Base):
     __tablename__ = "group_members"
@@ -59,6 +76,25 @@ class Message(Base):
     content = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"))
+    channel_id = Column(Integer, ForeignKey("group_channels.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    file_name = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=True)
+    file_type = Column(String, nullable=True)
+    file_checksum = Column(String, nullable=True)
+    storage_provider = Column(String, nullable=True)
+
+
+class GroupMessageReceipt(Base):
+    __tablename__ = "group_message_receipts"
+    __table_args__ = (UniqueConstraint("message_id", "user_id", name="uq_group_message_receipt"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class DirectMessage(Base):

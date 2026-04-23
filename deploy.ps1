@@ -4,6 +4,7 @@ docker compose build
 Write-Host "Desplegando infraestructura..." -ForegroundColor Cyan
 kubectl apply -f k8s/infrastructure/postgres.yml
 kubectl apply -f k8s/infrastructure/redis.yml
+kubectl apply -f k8s/infrastructure/etcd.yml
 kubectl apply -f k8s/infrastructure/zookeeper.yml
 kubectl apply -f k8s/infrastructure/kafka.yml
 

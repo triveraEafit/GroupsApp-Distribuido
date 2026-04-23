@@ -7,6 +7,7 @@ from app.routers import groups
 from app.schema_bootstrap import ensure_compat_schema
 from app.storage import storage_service
 from app.coordination import coordination_service
+from app.config import DISTRIBUTION_REPLICATION_FACTOR, DISTRIBUTION_SHARDS
 from prometheus_fastapi_instrumentator import Instrumentator
 
 
@@ -22,6 +23,15 @@ def startup():
     Base.metadata.create_all(bind=engine)
     ensure_compat_schema(engine)
     storage_service.ensure_bucket()
+    coordination_service.register_service(
+        "monolith",
+        {
+            "http_port": 8000,
+            "coordination_enabled": coordination_service.enabled,
+            "distribution_shards": DISTRIBUTION_SHARDS,
+            "replication_factor": DISTRIBUTION_REPLICATION_FACTOR,
+        },
+    )
 
 app.include_router(users.router)
 
@@ -51,4 +61,6 @@ def health():
         "service": "monolith",
         "database": "reachable",
         "coordination_etcd": coordination_service.health(),
+        "distribution_shards": DISTRIBUTION_SHARDS,
+        "replication_factor": DISTRIBUTION_REPLICATION_FACTOR,
     }

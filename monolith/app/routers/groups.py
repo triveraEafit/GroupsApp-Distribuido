@@ -15,6 +15,7 @@ from app.oauth2 import verify_access_token
 from app.storage import storage_service
 from app.websocket_manager import ConnectionManager
 from app.config import UPLOAD_DIR
+from app.config import DISTRIBUTION_REPLICATION_FACTOR, DISTRIBUTION_SHARDS
 
 router = APIRouter(
     prefix="/groups",
@@ -25,6 +26,61 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 VALID_ROLES = {"admin", "moderator", "member"}
 VALID_MEMBER_STATUS = {"pending", "active", "rejected", "left", "banned"}
 VALID_SUBSCRIPTION_MODE = {"open", "approval", "invite_only"}
+
+
+def _partition_slot(seed: int) -> int:
+    return seed % max(DISTRIBUTION_SHARDS, 1)
+
+
+def _replica_group(slot: int) -> str:
+    return f"replica-{(slot % max(DISTRIBUTION_REPLICATION_FACTOR, 1)) + 1}"
+
+
+def _default_channel(db: Session, group_id: int) -> models.GroupChannel | None:
+    return db.query(models.GroupChannel).filter(
+        models.GroupChannel.group_id == group_id,
+        models.GroupChannel.is_default == True,
+    ).first()
+
+
+def _ensure_default_channel(db: Session, group_id: int, created_by: int | None = None) -> models.GroupChannel:
+    channel = _default_channel(db, group_id)
+    if channel:
+        return channel
+    slot = _partition_slot(group_id)
+    channel = models.GroupChannel(
+        group_id=group_id,
+        name="general",
+        description="Canal principal del grupo",
+        created_by=created_by,
+        is_default=True,
+        partition_slot=slot,
+        replica_group=_replica_group(slot),
+    )
+    db.add(channel)
+    db.commit()
+    db.refresh(channel)
+    return channel
+
+
+def _resolve_channel(
+    db: Session,
+    group_id: int,
+    channel_id: int | None,
+    *,
+    allow_default_fallback: bool = True,
+) -> models.GroupChannel | None:
+    if channel_id:
+        channel = db.query(models.GroupChannel).filter(
+            models.GroupChannel.id == channel_id,
+            models.GroupChannel.group_id == group_id,
+        ).first()
+        if not channel:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        return channel
+    if allow_default_fallback:
+        return _ensure_default_channel(db, group_id)
+    return None
 
 
 def _must_be_active_member(db: Session, group_id: int, user_id: int) -> models.GroupMember:
@@ -64,6 +120,107 @@ def _dm_event(message: models.DirectMessage, sender_username: str, event_type: s
     }
 
 
+def _group_event(message: models.Message, event_type: str) -> dict:
+    return {
+        "type": event_type,
+        "message_id": message.id,
+        "content": message.content,
+        "user_id": message.user_id,
+        "group_id": message.group_id,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "file_name": message.file_name,
+        "file_path": message.file_path,
+        "file_size": message.file_size,
+        "file_type": message.file_type,
+        "file_checksum": message.file_checksum,
+        "storage_provider": message.storage_provider,
+    }
+
+
+def _active_group_member_ids(db: Session, group_id: int) -> list[int]:
+    rows = db.query(models.GroupMember.user_id).filter(
+        models.GroupMember.group_id == group_id,
+        models.GroupMember.status == "active",
+    ).all()
+    return [row[0] for row in rows]
+
+
+def _ensure_group_receipt(
+    db: Session,
+    *,
+    message_id: int,
+    user_id: int,
+    mark_delivered: bool = False,
+    mark_read: bool = False,
+    now: datetime | None = None,
+) -> models.GroupMessageReceipt:
+    receipt = db.query(models.GroupMessageReceipt).filter(
+        models.GroupMessageReceipt.message_id == message_id,
+        models.GroupMessageReceipt.user_id == user_id,
+    ).first()
+    if not receipt:
+        receipt = models.GroupMessageReceipt(message_id=message_id, user_id=user_id)
+        db.add(receipt)
+    timestamp = now or datetime.now(timezone.utc)
+    if mark_delivered and not receipt.delivered_at:
+        receipt.delivered_at = timestamp
+    if mark_read:
+        if not receipt.delivered_at:
+            receipt.delivered_at = timestamp
+        receipt.read_at = timestamp
+    return receipt
+
+
+def _message_receipt_summary(db: Session, message: models.Message, usernames_by_id: dict[int, str] | None = None) -> dict:
+    recipient_ids = [user_id for user_id in _active_group_member_ids(db, message.group_id) if user_id != message.user_id]
+    receipts = db.query(models.GroupMessageReceipt).filter(
+        models.GroupMessageReceipt.message_id == message.id
+    ).all()
+    delivered_ids = {receipt.user_id for receipt in receipts if receipt.delivered_at}
+    read_ids = {receipt.user_id for receipt in receipts if receipt.read_at}
+    return {
+        "delivered_count": len(delivered_ids),
+        "read_count": len(read_ids),
+        "total_recipients": len(recipient_ids),
+        "delivered_by": [usernames_by_id.get(user_id, f"user_{user_id}") for user_id in sorted(delivered_ids)] if usernames_by_id else [],
+        "read_by": [usernames_by_id.get(user_id, f"user_{user_id}") for user_id in sorted(read_ids)] if usernames_by_id else [],
+    }
+
+
+def _serialize_group_message(
+    db: Session,
+    message: models.Message,
+    usernames_by_id: dict[int, str] | None = None,
+) -> dict:
+    summary = _message_receipt_summary(db, message, usernames_by_id)
+    return {
+        "id": message.id,
+        "content": message.content,
+        "user_id": message.user_id,
+        "username": usernames_by_id.get(message.user_id) if usernames_by_id else None,
+        "group_id": message.group_id,
+        "channel_id": message.channel_id,
+        "created_at": message.created_at,
+        "file_name": message.file_name,
+        "file_path": message.file_path,
+        "file_size": message.file_size,
+        "file_type": message.file_type,
+        "file_checksum": message.file_checksum,
+        "storage_provider": message.storage_provider,
+        "receipt_summary": summary,
+    }
+
+
+def _channel_messages_filter(group_id: int, channel: models.GroupChannel | None):
+    if channel is None:
+        return models.Message.group_id == group_id
+    if channel.is_default:
+        return (models.Message.group_id == group_id) & (
+            (models.Message.channel_id == channel.id) | (models.Message.channel_id.is_(None))
+        )
+    return (models.Message.group_id == group_id) & (models.Message.channel_id == channel.id)
+
+
 @router.post("/", response_model=schemas.GroupResponse)
 def create_group(
     group: schemas.GroupCreate,
@@ -80,6 +237,8 @@ def create_group(
         subscription_mode=group.subscription_mode,
         allow_member_invites=group.allow_member_invites,
         max_members=group.max_members,
+        partition_slot=_partition_slot(current_user.id),
+        replica_group=_replica_group(_partition_slot(current_user.id)),
     )
 
     db.add(new_group)
@@ -93,7 +252,27 @@ def create_group(
         status="active",
         approved_by=current_user.id,
     ))
+    db.add(models.GroupChannel(
+        group_id=new_group.id,
+        name="general",
+        description="Canal principal del grupo",
+        created_by=current_user.id,
+        is_default=True,
+        partition_slot=_partition_slot(new_group.id),
+        replica_group=_replica_group(_partition_slot(new_group.id)),
+    ))
     db.commit()
+
+    coordination_service.put_json(
+        f"/groups/{new_group.id}/distribution",
+        {
+            "group_id": new_group.id,
+            "partition_slot": new_group.partition_slot,
+            "replica_group": new_group.replica_group,
+            "replication_factor": DISTRIBUTION_REPLICATION_FACTOR,
+            "shard_count": DISTRIBUTION_SHARDS,
+        },
+    )
 
     return new_group
 
@@ -291,7 +470,91 @@ def list_group_members(
     ]
 
 
-@router.get("/{group_id}/contacts")
+@router.get("/{group_id}/channels", response_model=list[schemas.GroupChannelResponse])
+def list_group_channels(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _must_be_active_member(db, group_id, current_user.id)
+    _ensure_default_channel(db, group_id, current_user.id)
+    return db.query(models.GroupChannel).filter(
+        models.GroupChannel.group_id == group_id
+    ).order_by(models.GroupChannel.is_default.desc(), models.GroupChannel.name.asc()).all()
+
+
+@router.post("/{group_id}/channels", response_model=schemas.GroupChannelResponse)
+def create_group_channel(
+    group_id: int,
+    payload: schemas.GroupChannelCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _must_be_group_admin_or_mod(db, group_id, current_user.id)
+    clean_name = payload.name.strip().lower().replace(" ", "-")
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Channel name is required")
+    existing = db.query(models.GroupChannel).filter(
+        models.GroupChannel.group_id == group_id,
+        models.GroupChannel.name == clean_name,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Channel already exists")
+
+    slot = _partition_slot(group_id + len(clean_name))
+    channel = models.GroupChannel(
+        group_id=group_id,
+        name=clean_name,
+        description=payload.description.strip() or None,
+        created_by=current_user.id,
+        is_default=False,
+        partition_slot=slot,
+        replica_group=_replica_group(slot),
+    )
+    db.add(channel)
+    db.commit()
+    db.refresh(channel)
+
+    coordination_service.put_json(
+        f"/groups/{group_id}/channels/{channel.id}",
+        {
+            "channel_id": channel.id,
+            "channel_name": channel.name,
+            "partition_slot": channel.partition_slot,
+            "replica_group": channel.replica_group,
+        },
+    )
+    return channel
+
+
+@router.get("/{group_id}/distribution", response_model=schemas.GroupDistributionResponse)
+def get_group_distribution_status(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _must_be_active_member(db, group_id, current_user.id)
+    group = db.query(models.Group).filter(models.Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    _ensure_default_channel(db, group_id, current_user.id)
+    channels = db.query(models.GroupChannel).filter(
+        models.GroupChannel.group_id == group_id
+    ).order_by(models.GroupChannel.is_default.desc(), models.GroupChannel.name.asc()).all()
+    return {
+        "group_id": group.id,
+        "coordination_enabled": coordination_service.enabled,
+        "coordination_healthy": coordination_service.health(),
+        "partition_strategy": "hash(group_id/channel_id) -> logical shard",
+        "shard_count": DISTRIBUTION_SHARDS,
+        "replication_factor": DISTRIBUTION_REPLICATION_FACTOR,
+        "group_partition_slot": group.partition_slot,
+        "group_replica_group": group.replica_group,
+        "channels": channels,
+    }
+
+
+@router.get("/{group_id}/contacts", response_model=list[schemas.GroupContactResponse])
 def list_group_contacts(
     group_id: int,
     db: Session = Depends(get_db),
@@ -377,6 +640,9 @@ async def websocket_endpoint(websocket: WebSocket, group_id: int):
         return
 
     db = SessionLocal()
+    current_user = db.query(models.User).filter(models.User.id == user_id).first()
+    channel_id_raw = websocket.query_params.get("channel_id")
+    channel_id = int(channel_id_raw) if channel_id_raw and channel_id_raw.isdigit() else None
 
     membership = db.query(models.GroupMember).filter_by(
         user_id=user_id,
@@ -391,6 +657,8 @@ async def websocket_endpoint(websocket: WebSocket, group_id: int):
         await websocket.close(code=1008)
         return
 
+    channel = _resolve_channel(db, group_id, channel_id)
+
     await manager.connect(group_id, websocket, user_id)
     print("CONNECTED SUCCESSFULLY")
 
@@ -402,21 +670,39 @@ async def websocket_endpoint(websocket: WebSocket, group_id: int):
             message = models.Message(
                 content=data,
                 user_id=user_id,
-                group_id=group_id
+                group_id=group_id,
+                channel_id=channel.id if channel else None,
             )
 
             db.add(message)
             db.commit()
             db.refresh(message)
 
-            await manager.broadcast_json(group_id, {
-                "type": "group_message",
-                "message_id": message.id,
-                "content": data,
-                "user_id": user_id,
-                "group_id": group_id,
-                "created_at": message.created_at.isoformat() if message.created_at else None,
-            })
+            online_user_ids = manager.get_group_online_user_ids(group_id)
+            now = datetime.now(timezone.utc)
+            for recipient_id in online_user_ids:
+                if recipient_id == user_id:
+                    continue
+                _ensure_group_receipt(
+                    db,
+                    message_id=message.id,
+                    user_id=recipient_id,
+                    mark_delivered=True,
+                    now=now,
+                )
+            db.commit()
+
+            usernames_by_id = {
+                row.id: row.username
+                for row in db.query(models.User.id, models.User.username).filter(
+                    models.User.id.in_(_active_group_member_ids(db, group_id))
+                ).all()
+            }
+            payload = _serialize_group_message(db, message, usernames_by_id)
+            payload["type"] = "group_message"
+            if current_user:
+                payload["username"] = current_user.username
+            await manager.broadcast_json(group_id, payload)
 
     except WebSocketDisconnect:
         print("DISCONNECTED")
@@ -424,18 +710,218 @@ async def websocket_endpoint(websocket: WebSocket, group_id: int):
     finally:
         db.close()
 
-@router.get("/{group_id}/messages")
+@router.get("/{group_id}/messages", response_model=list[schemas.GroupMessageResponse])
 def get_group_messages(
     group_id: int,
+    channel_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     _must_be_active_member(db, group_id, current_user.id)
+    channel = _resolve_channel(db, group_id, channel_id)
     messages = db.query(models.Message).filter(
-        models.Message.group_id == group_id
+        _channel_messages_filter(group_id, channel)
     ).order_by(models.Message.id).all()
+    member_ids = _active_group_member_ids(db, group_id)
+    usernames_by_id = {
+        row.id: row.username
+        for row in db.query(models.User.id, models.User.username).filter(models.User.id.in_(member_ids)).all()
+    }
 
-    return messages
+    now = datetime.now(timezone.utc)
+    changed = False
+    for message in messages:
+        if message.user_id == current_user.id:
+            continue
+        _ensure_group_receipt(
+            db,
+            message_id=message.id,
+            user_id=current_user.id,
+            mark_delivered=True,
+            now=now,
+        )
+        changed = True
+    if changed:
+        db.commit()
+
+    return [_serialize_group_message(db, message, usernames_by_id) for message in messages]
+
+
+@router.post("/receipts/group/delivered")
+async def mark_group_delivered(
+    payload: schemas.GroupMessageReceiptPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _must_be_active_member(db, payload.group_id, current_user.id)
+    channel = _resolve_channel(db, payload.group_id, payload.channel_id)
+    messages_query = db.query(models.Message).filter(_channel_messages_filter(payload.group_id, channel))
+    if payload.message_id:
+        messages_query = messages_query.filter(models.Message.id == payload.message_id)
+    messages = messages_query.order_by(models.Message.id).all()
+
+    now = datetime.now(timezone.utc)
+    updated_messages: list[models.Message] = []
+    for message in messages:
+        if message.user_id == current_user.id:
+            continue
+        _ensure_group_receipt(
+            db,
+            message_id=message.id,
+            user_id=current_user.id,
+            mark_delivered=True,
+            now=now,
+        )
+        updated_messages.append(message)
+    db.commit()
+
+    member_ids = _active_group_member_ids(db, payload.group_id)
+    usernames_by_id = {
+        row.id: row.username
+        for row in db.query(models.User.id, models.User.username).filter(models.User.id.in_(member_ids)).all()
+    }
+    for message in updated_messages:
+        await manager.broadcast_json(
+            payload.group_id,
+            {
+                "type": "group_receipt",
+                "message_id": message.id,
+                "group_id": payload.group_id,
+                "user_id": current_user.id,
+                "username": current_user.username,
+                "receipt_summary": _message_receipt_summary(db, message, usernames_by_id),
+            },
+        )
+
+    return {"updated": len(updated_messages)}
+
+
+@router.post("/receipts/group/read")
+async def mark_group_read(
+    payload: schemas.GroupMessageReceiptPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    _must_be_active_member(db, payload.group_id, current_user.id)
+    channel = _resolve_channel(db, payload.group_id, payload.channel_id)
+    messages_query = db.query(models.Message).filter(_channel_messages_filter(payload.group_id, channel))
+    if payload.message_id:
+        messages_query = messages_query.filter(models.Message.id == payload.message_id)
+    messages = messages_query.order_by(models.Message.id).all()
+
+    now = datetime.now(timezone.utc)
+    updated_messages: list[models.Message] = []
+    for message in messages:
+        if message.user_id == current_user.id:
+            continue
+        _ensure_group_receipt(
+            db,
+            message_id=message.id,
+            user_id=current_user.id,
+            mark_delivered=True,
+            mark_read=True,
+            now=now,
+        )
+        updated_messages.append(message)
+    db.commit()
+
+    member_ids = _active_group_member_ids(db, payload.group_id)
+    usernames_by_id = {
+        row.id: row.username
+        for row in db.query(models.User.id, models.User.username).filter(models.User.id.in_(member_ids)).all()
+    }
+    for message in updated_messages:
+        await manager.broadcast_json(
+            payload.group_id,
+            {
+                "type": "group_receipt",
+                "message_id": message.id,
+                "group_id": payload.group_id,
+                "user_id": current_user.id,
+                "username": current_user.username,
+                "receipt_summary": _message_receipt_summary(db, message, usernames_by_id),
+            },
+        )
+
+    return {"updated": len(updated_messages)}
+
+
+@router.post("/{group_id}/upload")
+async def upload_file_to_group(
+    group_id: int,
+    channel_id: int | None = None,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    _must_be_active_member(db, group_id, current_user.id)
+    channel = _resolve_channel(db, group_id, channel_id)
+
+    file_extension = os.path.splitext(file.filename or "")[1]
+    unique_filename = f"{uuid.uuid4()}{file_extension}"
+    file_path = UPLOAD_DIR / unique_filename
+
+    try:
+        contents = await file.read()
+        checksum = storage_service.checksum(contents)
+        provider, stored_key = storage_service.upload_bytes(
+            object_key=str(unique_filename),
+            data=contents,
+            content_type=file.content_type,
+        )
+        if provider == "local":
+            with open(file_path, "wb") as f:
+                f.write(contents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al guardar archivo: {str(e)}")
+
+    message = models.Message(
+        content=f"📎 File attachment: {file.filename}",
+        user_id=current_user.id,
+        group_id=group_id,
+        channel_id=channel.id if channel else None,
+        file_name=file.filename,
+        file_path=str(stored_key),
+        file_size=len(contents),
+        file_type=file.content_type,
+        file_checksum=checksum,
+        storage_provider=provider,
+    )
+
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+
+    try:
+        now = datetime.now(timezone.utc)
+        for recipient_id in manager.get_group_online_user_ids(group_id):
+            if recipient_id == current_user.id:
+                continue
+            _ensure_group_receipt(
+                db,
+                message_id=message.id,
+                user_id=recipient_id,
+                mark_delivered=True,
+                now=now,
+            )
+        db.commit()
+        member_ids = _active_group_member_ids(db, group_id)
+        usernames_by_id = {
+            row.id: row.username
+            for row in db.query(models.User.id, models.User.username).filter(models.User.id.in_(member_ids)).all()
+        }
+        payload = _serialize_group_message(db, message, usernames_by_id)
+        payload["type"] = "group_file"
+        await manager.broadcast_json(group_id, payload)
+    except Exception:
+        pass
+
+    return {
+        "message": "Archivo subido correctamente",
+        "message_id": message.id,
+        "file_name": file.filename,
+        "file_size": len(contents),
+    }
 
 @router.get("/my-groups")
 def get_my_groups(
@@ -936,6 +1422,62 @@ async def download_file(
     
     print(f"✅ Serving file: {message.file_name}")
     # Devolver el archivo
+    return FileResponse(
+        path=file_path,
+        filename=message.file_name,
+        media_type=message.file_type or "application/octet-stream"
+    )
+
+
+@router.get("/messages/{message_id}/download")
+async def download_group_file(
+    message_id: int,
+    token: str = None,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db)
+):
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Token requerido en query parameter")
+
+    try:
+        payload = verify_access_token(token)
+        user_id = int(payload.get("sub"))
+        current_user = db.query(models.User).filter(models.User.id == user_id).first()
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Usuario no encontrado")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Token inválido: {str(exc)}")
+
+    message = db.query(models.Message).filter(models.Message.id == message_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Mensaje no encontrado")
+
+    _must_be_active_member(db, message.group_id, current_user.id)
+
+    if not message.file_path:
+        raise HTTPException(status_code=404, detail="Este mensaje no tiene archivo adjunto")
+
+    if message.storage_provider == "s3":
+        try:
+            payload = storage_service.download_bytes(message.file_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Could not fetch file from storage: {str(exc)}")
+        return Response(
+            content=payload,
+            media_type=message.file_type or "application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{message.file_name or "download.bin"}"',
+            },
+        )
+
+    file_path = UPLOAD_DIR / message.file_path
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Archivo no encontrado en el servidor")
+
     return FileResponse(
         path=file_path,
         filename=message.file_name,

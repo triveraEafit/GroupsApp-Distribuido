@@ -25,6 +25,9 @@ export default function Groups() {
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [subscriptionMode, setSubscriptionMode] = useState("open");
+  const [allowMemberInvites, setAllowMemberInvites] = useState(false);
+  const [maxMembers, setMaxMembers] = useState("");
   const [joinId, setJoinId] = useState("");
   const [search, setSearch] = useState("");
 
@@ -74,7 +77,14 @@ export default function Groups() {
     setLoadingCreate(true);
 
     try {
-      const g = await createGroup({ name, description });
+      const payload = {
+        name,
+        description,
+        subscription_mode: subscriptionMode,
+        allow_member_invites: allowMemberInvites,
+        max_members: maxMembers.trim() ? Number(maxMembers) : null,
+      };
+      const g = await createGroup(payload);
       await joinGroup(g.id).catch(() => null);
       await loadGroups();
 
@@ -82,6 +92,9 @@ export default function Groups() {
 
       setName("");
       setDescription("");
+      setSubscriptionMode("open");
+      setAllowMemberInvites(false);
+      setMaxMembers("");
 
       setTimeout(() => {
         navigate(`/groups/${g.id}`);
@@ -155,6 +168,33 @@ export default function Groups() {
               rows={2}
               className="w-full resize-none rounded-xl border border-white/10 bg-[#0f1117] px-4 py-3 text-sm outline-none transition focus:border-[#6366f1] focus:ring-4 focus:ring-indigo-500/20"
             />
+
+            <select
+              value={subscriptionMode}
+              onChange={(e) => setSubscriptionMode(e.target.value)}
+              className="h-11 w-full rounded-xl border border-white/10 bg-[#0f1117] px-4 text-sm outline-none transition focus:border-[#6366f1] focus:ring-4 focus:ring-indigo-500/20"
+            >
+              <option value="open">Open</option>
+              <option value="approval">Approval required</option>
+              <option value="invite_only">Invite only</option>
+            </select>
+
+            <input
+              placeholder="Máximo de miembros (opcional)"
+              value={maxMembers}
+              onChange={(e) => setMaxMembers(e.target.value)}
+              inputMode="numeric"
+              className="h-11 w-full rounded-xl border border-white/10 bg-[#0f1117] px-4 text-sm outline-none transition focus:border-[#6366f1] focus:ring-4 focus:ring-indigo-500/20"
+            />
+
+            <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-[#0f1117] px-4 py-3 text-sm text-white/75">
+              <input
+                type="checkbox"
+                checked={allowMemberInvites}
+                onChange={(e) => setAllowMemberInvites(e.target.checked)}
+              />
+              Permitir que miembros inviten a otros
+            </label>
 
             <Button
               className="h-11 w-full rounded-xl bg-[linear-gradient(135deg,#6366f1,#7c3aed)] font-semibold"

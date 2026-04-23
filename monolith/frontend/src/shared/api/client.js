@@ -71,6 +71,31 @@ async function request(path, { method = "GET", headers = {}, body } = {}) {
   return data;
 }
 
+async function upload(path, file) {
+  const token = getToken();
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearToken();
+      window.location.href = "/login";
+    }
+    const msg = data?.detail || "Upload failed";
+    throw new Error(msg);
+  }
+
+  return data;
+}
+
 // ---- Auth ----
 export async function register({ username, email, password }) {
   return request("/users/register", {
@@ -99,11 +124,11 @@ export async function login({ username, password }) {
 }
 
 // ---- Groups ----
-export async function createGroup({ name, description }) {
+export async function createGroup(payload) {
   return request("/groups/", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -115,8 +140,89 @@ export async function getMyGroups() {
   return request("/groups/my-groups");
 }
 
-export async function getGroupMessages(groupId) {
-  return request(`/groups/${groupId}/messages`);
+export async function getGroupMessages(groupId, channelId = null) {
+  const suffix = channelId ? `?channel_id=${encodeURIComponent(channelId)}` : "";
+  return request(`/groups/${groupId}/messages${suffix}`);
+}
+
+export async function getGroupChannels(groupId) {
+  return request(`/groups/${groupId}/channels`);
+}
+
+export async function createGroupChannel(groupId, payload) {
+  return request(`/groups/${groupId}/channels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getGroupDistribution(groupId) {
+  return request(`/groups/${groupId}/distribution`);
+}
+
+export async function getGroupMembers(groupId) {
+  return request(`/groups/${groupId}/members`);
+}
+
+export async function getGroupContacts(groupId) {
+  return request(`/groups/${groupId}/contacts`);
+}
+
+export async function addGroupContact(groupId, contactUsername) {
+  return request(`/groups/${groupId}/contacts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contact_username: contactUsername }),
+  });
+}
+
+export async function deleteGroupContact(groupId, contactUserId) {
+  return request(`/groups/${groupId}/contacts/${contactUserId}`, { method: "DELETE" });
+}
+
+export async function approveGroupMember(groupId, userId) {
+  return request(`/groups/${groupId}/members/${userId}/approve`, { method: "POST" });
+}
+
+export async function rejectGroupMember(groupId, userId) {
+  return request(`/groups/${groupId}/members/${userId}/reject`, { method: "POST" });
+}
+
+export async function promoteGroupMember(groupId, userId, role) {
+  return request(`/groups/${groupId}/members/${userId}/promote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function demoteGroupMember(groupId, userId) {
+  return request(`/groups/${groupId}/members/${userId}/demote`, { method: "POST" });
+}
+
+export async function removeGroupMember(groupId, userId) {
+  return request(`/groups/${groupId}/members/${userId}`, { method: "DELETE" });
+}
+
+export async function leaveGroup(groupId) {
+  return request(`/groups/${groupId}/leave`, { method: "POST" });
+}
+
+export async function markGroupMessagesDelivered(groupId, messageId = null, channelId = null) {
+  return request("/groups/receipts/group/delivered", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_id: groupId, channel_id: channelId, message_id: messageId }),
+  });
+}
+
+export async function markGroupMessagesRead(groupId, messageId = null, channelId = null) {
+  return request("/groups/receipts/group/read", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_id: groupId, channel_id: channelId, message_id: messageId }),
+  });
 }
 
 export async function getDirectHistory(username) {
@@ -134,33 +240,20 @@ export async function markDirectMessagesAsRead(username) {
 }
 
 export async function uploadFileToUser(username, file) {
-  const token = getToken();
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const res = await fetch(`/api/groups/dm/upload/${encodeURIComponent(username)}`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`
-    },
-    body: formData
-  });
-
-  const data = await res.json().catch(() => null);
-
-  if (!res.ok) {
-    if (res.status === 401) {
-      clearToken();
-      window.location.href = "/login";
-    }
-    const msg = data?.detail || 'Upload failed';
-    throw new Error(msg);
-  }
-
-  return data;
+  return upload(`/groups/dm/upload/${encodeURIComponent(username)}`, file);
 }
 
-export function getFileDownloadUrl(messageId) {
+export async function uploadFileToGroup(groupId, file, channelId = null) {
+  const suffix = channelId ? `?channel_id=${encodeURIComponent(channelId)}` : "";
+  return upload(`/groups/${groupId}/upload${suffix}`, file);
+}
+
+export function getDirectFileDownloadUrl(messageId) {
   const token = getToken();
   return `/api/groups/dm/download/${messageId}?token=${encodeURIComponent(token)}`;
+}
+
+export function getGroupFileDownloadUrl(messageId) {
+  const token = getToken();
+  return `/api/groups/messages/${messageId}/download?token=${encodeURIComponent(token)}`;
 }

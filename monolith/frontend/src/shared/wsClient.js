@@ -3,7 +3,8 @@ import { getToken } from "@/shared/api/client";
 function buildWsUrl(path) {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const token = getToken();
-  return `${protocol}://${window.location.host}/api${path}?token=${encodeURIComponent(token || "")}`;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${protocol}://${window.location.host}/api${path}${separator}token=${encodeURIComponent(token || "")}`;
 }
 
 export class TextWebSocketClient {

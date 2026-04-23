@@ -6,6 +6,7 @@ import Register from "@/pages/Register.jsx";
 import Groups from "@/pages/Groups.jsx";
 import GroupDetail from "@/pages/GroupDetail.jsx";
 import Chat from "@/pages/Chat.jsx";
+import Settings from "@/pages/Settings.jsx";
 
 import { AuthLayout } from "@/layouts/AuthLayout";
 import { AppLayout } from "@/layouts/AppLayout";
@@ -40,6 +41,7 @@ export default function App() {
         <Route path="/groups" element={<Groups />} />
         <Route path="/groups/:id" element={<GroupDetail />} />
         <Route path="/chat" element={<Chat />} />
+        <Route path="/settings" element={<Settings />} />
       </Route>
 
       {/* Not found */}
