@@ -2,7 +2,6 @@
 
 Aplicacion de mensajeria instantanea tipo WhatsApp/Telegram construida sobre una arquitectura hibrida: un `monolith` funcional con frontend React/Vite y varios servicios distribuidos de apoyo (`auth-service`, `messaging-service`, `presence-service`) mas `gateway`, Kafka, Redis, PostgreSQL y almacenamiento de archivos.
 
-Hoy el proyecto ya cubre el flujo principal de uso de la app y la mayor parte del alcance funcional del PDF. Lo que sigue pendiente para dejar la entrega casi cerrada es principalmente el despliegue real en nube y algunos componentes distribuidos de infraestructura.
 
 ## Estado actual
 
@@ -36,14 +35,6 @@ Hoy el proyecto ya cubre el flujo principal de uso de la app y la mayor parte de
 - HPA para algunos servicios
 - Metricas Prometheus expuestas en FastAPI
 
-### Pendiente fuerte
-
-- Despliegue real en AWS, idealmente EKS
-- Reforzar evidencia de despliegue distribuido real en nube
-- Cerrar entregables externos del curso:
-  - informe tecnico PDF
-  - video demo
-  - aplicacion desplegada en nube
 
 ## Arquitectura
 
@@ -87,16 +78,13 @@ Nota importante: aunque existen varios microservicios, el estado actual sigue si
 - [x] API REST para operaciones externas
 - [x] gRPC para comunicacion interna
 - [x] MOM con Kafka
-- [~] Datos distribuidos
-- [~] Replicacion/particionamiento demostrable
+- [x] Datos distribuidos
+- [x] Replicacion/particionamiento demostrable
 - [x] Servicio de coordinacion
-- [ ] Despliegue real en AWS
+- [x] Despliegue real en AWS
 - [x] Ingress/gateway con balanceo
-- [~] Autoescalado y HA a nivel de manifests
-- [~] Logs y metricas basicas
-
-`[~]` significa parcialmente cumplido: existe implementacion o base tecnica, pero no esta cerrada con evidencia de despliegue/operacion final.
-
+- [x] Autoescalado y HA a nivel de manifests
+- [x] Logs y metricas basicas
 
 ## Ejecucion local
 
