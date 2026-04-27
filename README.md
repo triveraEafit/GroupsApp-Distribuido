@@ -97,18 +97,6 @@ Nota importante: aunque existen varios microservicios, el estado actual sigue si
 
 `[~]` significa parcialmente cumplido: existe implementacion o base tecnica, pero no esta cerrada con evidencia de despliegue/operacion final.
 
-## Que falta del PDF
-
-Tomando el enunciado de `ST0263-SI3007-261-Proyecto1_GroupsApp.docx.pdf`, lo mas importante que sigue faltando es:
-
-1. Despliegue en AWS, preferiblemente EKS.
-2. Evidencia mas solida en despliegue real de datos distribuidos con replicacion/particionamiento.
-3. Entregables finales del curso por fuera del codigo:
-   - informe tecnico en PDF
-   - video demo
-   - app desplegada en nube
-
-Si la meta es "dejar solo despliegue por hacer", ahora si queda bastante razonable decirlo: ya hay canales, coordinacion con `etcd` y particionamiento logico visible; lo que falta defender fuerte es el despliegue real en nube y los entregables finales.
 
 ## Ejecucion local
 
