@@ -1,4 +1,4 @@
-# GroupsApp Distribuido
+# GroupsApp 
 
 Aplicacion de mensajeria instantanea tipo WhatsApp/Telegram construida sobre una arquitectura hibrida: un `monolith` funcional con frontend React/Vite y varios servicios distribuidos de apoyo (`auth-service`, `messaging-service`, `presence-service`) mas `gateway`, Kafka, Redis, PostgreSQL y almacenamiento de archivos.
 
