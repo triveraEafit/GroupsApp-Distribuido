@@ -54,7 +54,7 @@ Servicios del repositorio:
 
 Nota importante: aunque existen varios microservicios, el estado actual sigue siendo hibrido. El frontend todavia consume buena parte del flujo principal a traves del `monolith`.
 
-## Checklist frente al PDF
+## Checklist requisitos
 
 ### Funcionales
 
